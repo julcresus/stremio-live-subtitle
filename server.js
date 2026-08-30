@@ -540,8 +540,7 @@ app.get(['/stream/*', '*/stream/*'], async (req, res) => {
     const data = response.data;
 
     if (data && data.streams && Array.isArray(data.streams)) {
-      const enhancedStreams = [];
-      data.streams.forEach((stream) => {
+      data.streams = data.streams.map((stream) => {
         if (stream.url) {
           const streamHash = crypto.createHash('md5').update(stream.url).digest('hex').substring(0, 10);
           const encodedStreamUrl = encodeURIComponent(Buffer.from(stream.url).toString('base64'));
@@ -549,26 +548,13 @@ app.get(['/stream/*', '*/stream/*'], async (req, res) => {
           getOrCreateSession(stream.url, streamHash, GROQ_API_KEY);
           const subtitleTracks = buildSubtitleTracks(host, encodedStreamUrl, streamHash);
 
-          // Option A: Continuous HLS Master Stream with Native Live Subtitles (Best for TV & long live watching)
-          enhancedStreams.push({
-            name: '🎙️ Live AI Subtitles',
-            title: `${stream.title || 'Live Stream'} · [Continuous AI Subtitles & Multi-Lang]`,
-            url: `${host}/hls/${encodedStreamUrl}/master.m3u8`,
-            subtitles: subtitleTracks,
-            behaviorHints: { notWebReady: false }
-          });
-
-          // Option B: Direct Stream with Subtitle Track
-          enhancedStreams.push({
-            name: 'Live Sports',
-            title: `${stream.title || 'Live Stream'} · [Direct Stream + Subtitles]`,
-            url: stream.url,
-            subtitles: subtitleTracks,
-            behaviorHints: { notWebReady: false }
-          });
+          return {
+            ...stream,
+            subtitles: subtitleTracks
+          };
         }
+        return stream;
       });
-      data.streams = enhancedStreams;
     }
 
     res.json(data);
