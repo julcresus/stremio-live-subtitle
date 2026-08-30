@@ -117,7 +117,7 @@ app.get('/stream/:type/:id.json', async (req, res) => {
     const data = response.data;
 
     if (data && data.streams && Array.isArray(data.streams)) {
-      data.streams = data.streams.map((stream, idx) => {
+      data.streams = data.streams.map((stream) => {
         if (stream.url) {
           const streamHash = crypto.createHash('md5').update(stream.url).digest('hex').substring(0, 10);
           const encodedStreamUrl = encodeURIComponent(Buffer.from(stream.url).toString('base64'));
@@ -146,7 +146,35 @@ app.get('/stream/:type/:id.json', async (req, res) => {
   }
 });
 
-// 5. Dynamic WebVTT Live Subtitle Endpoint
+// 5. Stremio Subtitles Resource Endpoint (Queries subtitles for a match/video)
+app.get('/subtitles/:type/:id/:extra?.json', async (req, res) => {
+  const { type, id } = req.params;
+  const host = getHostUrl(req);
+
+  try {
+    // Fetch stream URLs for this match to link the live subtitle track
+    const streamRes = await axios.get(`${HIGHFLY_BASE}/stream/${type}/${id}.json`);
+    const streams = streamRes.data?.streams || [];
+    
+    const subtitles = [];
+    if (streams.length > 0 && streams[0].url) {
+      const encodedStreamUrl = encodeURIComponent(Buffer.from(streams[0].url).toString('base64'));
+      subtitles.push({
+        id: `live-ai-${id}`,
+        url: `${host}/subtitles/${encodedStreamUrl}/live.vtt`,
+        lang: 'eng',
+        label: '🎙️ Live AI Subtitles'
+      });
+    }
+
+    res.json({ subtitles });
+  } catch (error) {
+    console.error(`[Addon] Subtitles resource error:`, error.message);
+    res.json({ subtitles: [] });
+  }
+});
+
+// 6. Dynamic WebVTT Live Subtitle Endpoint
 app.get('/subtitles/:encodedUrl/live.vtt', (req, res) => {
   const { encodedUrl } = req.params;
   let rawUrl;
