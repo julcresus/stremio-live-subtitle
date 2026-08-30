@@ -10,7 +10,7 @@ const PORT = process.env.PORT || 7000;
 const HIGHFLY_BASE = 'https://sports.highfly.dev';
 const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
 
-// Enable CORS for Stremio Web, Desktop and LG Smart TV apps
+// Enable CORS for all clients
 app.use(cors());
 
 function getHostUrl(req) {
@@ -21,12 +21,12 @@ function getHostUrl(req) {
 }
 
 const SUPPORTED_LANGUAGES = [
-  { code: 'orig', label: '🎙️ Original Audio (Live Speech)' },
   { code: 'eng', label: '🇬🇧 English (Live AI Translation)' },
   { code: 'fre', label: '🇫🇷 Français (Traduction AI)' },
   { code: 'spa', label: '🇪🇸 Español (Traducción AI)' },
   { code: 'ger', label: '🇩🇪 Deutsch (AI Übersetzung)' },
-  { code: 'ita', label: '🇮🇹 Italiano (Traduzione AI)' }
+  { code: 'ita', label: '🇮🇹 Italiano (Traduzione AI)' },
+  { code: 'orig', label: '🎙️ Original Audio (Live Speech)' }
 ];
 
 function buildSubtitleTracks(host, encodedStreamUrl, streamHash) {
@@ -531,7 +531,7 @@ app.get(['/meta/*', '*/meta/*'], async (req, res) => {
   }
 });
 
-// 4. Stream Proxy
+// 4. Stream Proxy with HLS Rewriter Relay Links
 app.get(['/stream/*', '*/stream/*'], async (req, res) => {
   const host = getHostUrl(req);
   try {
@@ -550,7 +550,7 @@ app.get(['/stream/*', '*/stream/*'], async (req, res) => {
 
           return {
             ...stream,
-            url: stream.url,
+            url: `${host}/relay/${encodedStreamUrl}/live.m3u8`,
             subtitles: subtitleTracks
           };
         }
@@ -560,7 +560,6 @@ app.get(['/stream/*', '*/stream/*'], async (req, res) => {
 
     res.json(data);
   } catch (error) {
-    console.error(`[Addon] Stream error:`, error.message);
     res.status(500).json({ streams: [] });
   }
 });
@@ -591,36 +590,121 @@ app.get(['/subtitles/sport/*', '*/subtitles/sport/*'], async (req, res) => {
 });
 
 // -------------------------------------------------------------
-// HLS Continuous Master & Subtitle Playlist Endpoints
+// HLS Rewriter Relay Engine (Injects Live Subtitles directly into HLS stream)
 // -------------------------------------------------------------
 
-// HLS Master Playlist (Directs video to source + connects continuous live subtitle tracks)
-app.get('/hls/:encodedUrl/master.m3u8', (req, res) => {
+app.get('/relay/:encodedUrl/live.m3u8', async (req, res) => {
   const { encodedUrl } = req.params;
   const host = getHostUrl(req);
   let rawUrl;
   try {
     rawUrl = Buffer.from(decodeURIComponent(encodedUrl), 'base64').toString('utf-8');
   } catch (e) {
-    return res.status(400).send('Invalid stream URL encoding');
+    return res.status(400).send('Invalid stream URL');
   }
 
   const streamId = crypto.createHash('md5').update(rawUrl).digest('hex').substring(0, 10);
   getOrCreateSession(rawUrl, streamId, GROQ_API_KEY);
 
-  let master = `#EXTM3U\n#EXT-X-VERSION:3\n`;
-  master += `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="🎙️ English AI",DEFAULT=YES,AUTOSELECT=YES,FORCED=NO,LANGUAGE="eng",URI="${host}/hls/${encodedUrl}/sub_eng.m3u8"\n`;
-  master += `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="🇫🇷 Français AI",DEFAULT=NO,AUTOSELECT=NO,FORCED=NO,LANGUAGE="fre",URI="${host}/hls/${encodedUrl}/sub_fre.m3u8"\n`;
-  master += `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="🇪🇸 Español AI",DEFAULT=NO,AUTOSELECT=NO,FORCED=NO,LANGUAGE="spa",URI="${host}/hls/${encodedUrl}/sub_spa.m3u8"\n`;
-  master += `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="🇩🇪 Deutsch AI",DEFAULT=NO,AUTOSELECT=NO,FORCED=NO,LANGUAGE="ger",URI="${host}/hls/${encodedUrl}/sub_ger.m3u8"\n`;
-  master += `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="🇮🇹 Italiano AI",DEFAULT=NO,AUTOSELECT=NO,FORCED=NO,LANGUAGE="ita",URI="${host}/hls/${encodedUrl}/sub_ita.m3u8"\n`;
-  master += `#EXT-X-STREAM-INF:BANDWIDTH=3000000,SUBTITLES="subs"\n`;
-  master += `${rawUrl}\n`;
+  try {
+    const upstreamRes = await axios.get(rawUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)',
+        'Referer': rawUrl
+      },
+      timeout: 6000
+    });
 
-  res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-  res.send(master);
+    let content = upstreamRes.data;
+    if (typeof content !== 'string') content = content.toString();
+
+    // Check if upstream is a Master Playlist (contains #EXT-X-STREAM-INF)
+    if (content.includes('#EXT-X-STREAM-INF')) {
+      const baseUrl = rawUrl.substring(0, rawUrl.lastIndexOf('/') + 1);
+      
+      // Inject Subtitle tracks at the top
+      let subtitleTags = `\n#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="🎙️ English AI",DEFAULT=YES,AUTOSELECT=YES,FORCED=NO,LANGUAGE="eng",URI="${host}/hls/${encodedUrl}/sub_eng.m3u8"\n`;
+      subtitleTags += `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="🇫🇷 Français AI",DEFAULT=NO,AUTOSELECT=NO,FORCED=NO,LANGUAGE="fre",URI="${host}/hls/${encodedUrl}/sub_fre.m3u8"\n`;
+      subtitleTags += `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="🇪🇸 Español AI",DEFAULT=NO,AUTOSELECT=NO,FORCED=NO,LANGUAGE="spa",URI="${host}/hls/${encodedUrl}/sub_spa.m3u8"\n`;
+      subtitleTags += `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="🇩🇪 Deutsch AI",DEFAULT=NO,AUTOSELECT=NO,FORCED=NO,LANGUAGE="ger",URI="${host}/hls/${encodedUrl}/sub_ger.m3u8"\n`;
+      subtitleTags += `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="🇮🇹 Italiano AI",DEFAULT=NO,AUTOSELECT=NO,FORCED=NO,LANGUAGE="ita",URI="${host}/hls/${encodedUrl}/sub_ita.m3u8"\n`;
+
+      let rewritten = content.replace(/(#EXTM3U[^\n]*\n)/i, `$1${subtitleTags}`);
+
+      // Add SUBTITLES="subs" to stream inf lines and resolve relative URLs to absolute CDN URLs
+      rewritten = rewritten.split('\n').map(line => {
+        if (line.startsWith('#EXT-X-STREAM-INF') && !line.includes('SUBTITLES=')) {
+          return line + ',SUBTITLES="subs"';
+        }
+        if (line.trim() && !line.startsWith('#')) {
+          return new URL(line.trim(), baseUrl).href;
+        }
+        return line;
+      }).join('\n');
+
+      res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      return res.send(rewritten);
+    } else {
+      // If it's already a media playlist with .ts chunks, wrap it in a clean master playlist
+      let master = `#EXTM3U\n#EXT-X-VERSION:3\n`;
+      master += `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="🎙️ English AI",DEFAULT=YES,AUTOSELECT=YES,FORCED=NO,LANGUAGE="eng",URI="${host}/hls/${encodedUrl}/sub_eng.m3u8"\n`;
+      master += `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="🇫🇷 Français AI",DEFAULT=NO,AUTOSELECT=NO,FORCED=NO,LANGUAGE="fre",URI="${host}/hls/${encodedUrl}/sub_fre.m3u8"\n`;
+      master += `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="🇪🇸 Español AI",DEFAULT=NO,AUTOSELECT=NO,FORCED=NO,LANGUAGE="spa",URI="${host}/hls/${encodedUrl}/sub_spa.m3u8"\n`;
+      master += `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="🇩🇪 Deutsch AI",DEFAULT=NO,AUTOSELECT=NO,FORCED=NO,LANGUAGE="ger",URI="${host}/hls/${encodedUrl}/sub_ger.m3u8"\n`;
+      master += `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="🇮🇹 Italiano AI",DEFAULT=NO,AUTOSELECT=NO,FORCED=NO,LANGUAGE="ita",URI="${host}/hls/${encodedUrl}/sub_ita.m3u8"\n`;
+      master += `#EXT-X-STREAM-INF:BANDWIDTH=5000000,SUBTITLES="subs"\n`;
+      master += `${host}/relay/${encodedUrl}/media.m3u8\n`;
+
+      res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      return res.send(master);
+    }
+  } catch (err) {
+    // Fallback: Redirect directly to raw URL
+    return res.redirect(rawUrl);
+  }
+});
+
+// Relay child media playlist (.ts chunks with absolute CDN URLs)
+app.get('/relay/:encodedUrl/media.m3u8', async (req, res) => {
+  const { encodedUrl } = req.params;
+  let rawUrl;
+  try {
+    rawUrl = Buffer.from(decodeURIComponent(encodedUrl), 'base64').toString('utf-8');
+  } catch (e) {
+    return res.status(400).send('Invalid stream URL');
+  }
+
+  try {
+    const upstreamRes = await axios.get(rawUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)',
+        'Referer': rawUrl
+      },
+      timeout: 6000
+    });
+
+    let content = upstreamRes.data;
+    if (typeof content !== 'string') content = content.toString();
+
+    const baseUrl = rawUrl.substring(0, rawUrl.lastIndexOf('/') + 1);
+    const rewritten = content.split('\n').map(line => {
+      if (line.trim() && !line.startsWith('#')) {
+        return new URL(line.trim(), baseUrl).href;
+      }
+      return line;
+    }).join('\n');
+
+    res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.send(rewritten);
+  } catch (err) {
+    res.redirect(rawUrl);
+  }
 });
 
 // Continuous Rolling HLS Subtitle Playlist (.m3u8)
@@ -689,5 +773,5 @@ app.get(['/subtitles/:encodedUrl/:lang/live.vtt', '/subtitles/:encodedUrl/live.v
 });
 
 app.listen(PORT, () => {
-  console.log(`\n🚀 Stremio Sports Streams + AI Subtitles running on port ${PORT}`);
+  console.log(`\n🚀 Stremio Sports Streams + Live AI Subtitles running on port ${PORT}`);
 });
