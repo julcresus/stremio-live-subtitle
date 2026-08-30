@@ -13,10 +13,9 @@ class StreamSession {
     this.streamUrl = streamUrl;
     this.streamId = streamId;
     this.apiKey = apiKey;
-    this.cues = []; // { start: number, end: number, text: { [lang]: string } }
-    this.listeners = new Set(); // Active HTTP response streams { res, lang }
+    this.cues = []; // { text: { [lang]: string }, createdAt: number }
+    this.listeners = new Set(); // { res, lang, connectedAt: number }
     this.lastAccessTime = Date.now();
-    this.startTime = Date.now();
     this.isAlive = true;
     this.tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `sub_${streamId}_`));
     this.ffmpegProc = null;
@@ -81,8 +80,6 @@ class StreamSession {
             const rawEnglishText = await this.transcribeAudioChunk(filePath);
             if (rawEnglishText && rawEnglishText.trim().length > 0) {
               const cleanedText = rawEnglishText.trim();
-              const cueStartTime = (Date.now() - this.startTime) / 1000;
-              const cueEndTime = cueStartTime + 3.5;
 
               // Generate translations
               const translations = {
@@ -94,17 +91,16 @@ class StreamSession {
               };
 
               const newCue = {
-                start: cueStartTime,
-                end: cueEndTime,
-                text: translations
+                text: translations,
+                createdAt: Date.now()
               };
 
               this.cues.push(newCue);
-              if (this.cues.length > 60) this.cues.shift();
+              if (this.cues.length > 50) this.cues.shift();
 
-              console.log(`[Transcriber] [${this.streamId}] Live: "${cleanedText}"`);
+              console.log(`[Transcriber] [${this.streamId}] Subtitle: "${cleanedText}"`);
 
-              // Broadcast new cue to all active streaming HTTP responses
+              // Broadcast new cue to all connected Stremio players with synchronized player timestamps
               this.broadcastCue(newCue);
             }
           }
@@ -147,7 +143,7 @@ class StreamSession {
     if (!this.apiKey || !text || targetLanguage === 'English') return text;
 
     try {
-      const prompt = `Translate the following live sports commentary sentence accurately into ${targetLanguage}. Output ONLY the direct translation and nothing else:\n\n"${text}"`;
+      const prompt = `Translate this sports commentary sentence into ${targetLanguage}. Output ONLY the translated text, no quotes or notes:\n\n${text}`;
       const response = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
         model: 'llama-3.1-8b-instant',
         messages: [{ role: 'user', content: prompt }],
@@ -163,13 +159,14 @@ class StreamSession {
 
       return response.data.choices[0]?.message?.content?.replace(/^["']|["']$/g, '').trim() || text;
     } catch (err) {
-      return text; // Fallback to original text if translation fails
+      return text;
     }
   }
 
   attachListener(res, lang = 'eng') {
     this.touch();
-    
+    const connectedAt = Date.now();
+
     // Set headers for live streaming WebVTT
     res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -180,16 +177,19 @@ class StreamSession {
     // Send WebVTT Header
     res.write("WEBVTT\n\n");
 
-    // Send recent buffered cues
-    for (const cue of this.cues) {
-      const text = cue.text[lang] || cue.text['eng'] || '';
-      res.write(`${formatTime(cue.start)} --> ${formatTime(cue.end)}\n${text}\n\n`);
+    // If we have recent cues, send the latest one starting at player timestamp 00:00:00
+    if (this.cues.length > 0) {
+      const latest = this.cues[this.cues.length - 1];
+      const text = latest.text[lang] || latest.text['eng'] || '';
+      res.write(`00:00:00.000 --> 00:00:04.000\n${text}\n\n`);
+    } else {
+      res.write(`00:00:00.000 --> 00:00:04.000\n[🎙️ Live AI Subtitles Connecting...]\n\n`);
     }
 
-    const listener = { res, lang };
+    const listener = { res, lang, connectedAt };
     this.listeners.add(listener);
 
-    // Heartbeat keep-alive every 5s
+    // Heartbeat keep-alive every 4s
     const keepAlive = setInterval(() => {
       if (res.writableEnded || res.closed) {
         clearInterval(keepAlive);
@@ -197,7 +197,7 @@ class StreamSession {
         return;
       }
       res.write(`NOTE heartbeat\n\n`);
-    }, 5000);
+    }, 4000);
 
     res.on('close', () => {
       clearInterval(keepAlive);
@@ -206,11 +206,17 @@ class StreamSession {
   }
 
   broadcastCue(cue) {
+    const now = Date.now();
     for (const listener of this.listeners) {
       try {
         if (!listener.res.writableEnded && !listener.res.closed) {
+          // Calculate player elapsed time relative to when THIS player started
+          const elapsed = (now - listener.connectedAt) / 1000;
+          const startSec = Math.max(0, elapsed);
+          const endSec = startSec + 4.5;
+
           const text = cue.text[listener.lang] || cue.text['eng'] || '';
-          listener.res.write(`${formatTime(cue.start)} --> ${formatTime(cue.end)}\n${text}\n\n`);
+          listener.res.write(`${formatTime(startSec)} --> ${formatTime(endSec)}\n${text}\n\n`);
         }
       } catch (e) {
         this.listeners.delete(listener);
@@ -261,7 +267,7 @@ function getOrCreateSession(streamUrl, streamId, apiKey) {
   return session;
 }
 
-// Cleanup inactive sessions (no active listeners or requests for > 60s)
+// Cleanup inactive sessions
 setInterval(() => {
   const now = Date.now();
   for (const [id, session] of sessions.entries()) {
