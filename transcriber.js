@@ -13,7 +13,8 @@ class StreamSession {
     this.streamUrl = streamUrl;
     this.streamId = streamId;
     this.apiKey = apiKey;
-    this.cues = []; // { text: { [lang]: string }, createdAt: number }
+    this.cues = []; // { segId: number, text: { [lang]: string }, createdAt: number }
+    this.segCounter = 0;
     this.lastAccessTime = Date.now();
     this.isAlive = true;
     this.tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `sub_${streamId}_`));
@@ -89,25 +90,25 @@ class StreamSession {
                 this.translateText(originalText, 'Italian')
               ]);
 
-              const translations = {
-                orig: originalText,
-                eng: english,
-                fre: french,
-                spa: spanish,
-                ger: german,
-                ita: italian
-              };
-
+              this.segCounter++;
               const newCue = {
-                text: translations,
+                segId: this.segCounter,
+                text: {
+                  orig: originalText,
+                  eng: english,
+                  fre: french,
+                  spa: spanish,
+                  ger: german,
+                  ita: italian
+                },
                 createdAt: Date.now()
               };
 
               this.cues.push(newCue);
-              // Keep last 30 cues
-              if (this.cues.length > 30) this.cues.shift();
+              // Keep last 40 cues in memory
+              if (this.cues.length > 40) this.cues.shift();
 
-              console.log(`[Transcriber] [${this.streamId}] (Orig): "${originalText}" -> (EN): "${english}"`);
+              console.log(`[Transcriber] [${this.streamId}] (Seg ${this.segCounter}) "${originalText}" -> EN: "${english}"`);
             }
           }
         } catch (e) {
@@ -169,6 +170,51 @@ class StreamSession {
     }
   }
 
+  // Generate continuous HLS subtitle playlist (.m3u8)
+  getHlsSubtitlePlaylist(host, encodedUrl, lang = 'eng') {
+    this.touch();
+    
+    // Take the last 5 segments for the rolling live playlist
+    const recent = this.cues.slice(-5);
+    const mediaSeq = recent.length > 0 ? recent[0].segId : 1;
+
+    let m3u8 = `#EXTM3U\n`;
+    m3u8 += `#EXT-X-VERSION:3\n`;
+    m3u8 += `#EXT-X-TARGETDURATION:4\n`;
+    m3u8 += `#EXT-X-MEDIA-SEQUENCE:${mediaSeq}\n\n`;
+
+    if (recent.length === 0) {
+      m3u8 += `#EXTINF:4.0,\n`;
+      m3u8 += `${host}/hls/${encodedUrl}/seg_init_${lang}.vtt\n`;
+      return m3u8;
+    }
+
+    for (const cue of recent) {
+      m3u8 += `#EXTINF:3.5,\n`;
+      m3u8 += `${host}/hls/${encodedUrl}/seg_${cue.segId}_${lang}.vtt\n`;
+    }
+
+    return m3u8;
+  }
+
+  // Generate single segment WebVTT chunk
+  getSegmentVTT(segId, lang = 'eng') {
+    this.touch();
+    if (segId === 'init') {
+      return `WEBVTT\n\n00:00:00.000 --> 00:00:04.000\n[🎙️ Live AI Subtitles Active]\n\n`;
+    }
+
+    const id = parseInt(segId, 10);
+    const cue = this.cues.find(c => c.segId === id);
+    if (!cue) {
+      return `WEBVTT\n\n00:00:00.000 --> 00:00:03.500\n...\n\n`;
+    }
+
+    const text = cue.text[lang] || cue.text['eng'] || cue.text['orig'] || '';
+    return `WEBVTT\n\n00:00:00.000 --> 00:00:03.500\n${text}\n\n`;
+  }
+
+  // Fallback single WebVTT file
   getWebVTT(lang = 'eng') {
     this.touch();
     let vtt = "WEBVTT\n\n";
@@ -178,13 +224,11 @@ class StreamSession {
       return vtt;
     }
 
-    // Sequence the accumulated cues starting at 00:00:00.000
-    // Each cue is displayed for 3.5 seconds in order so MPV parses and displays them smoothly
     let currentSec = 0;
     for (let i = 0; i < this.cues.length; i++) {
       const cue = this.cues[i];
       const startSec = currentSec;
-      const endSec = startSec + 3.8;
+      const endSec = startSec + 3.5;
       currentSec = endSec;
 
       const text = cue.text[lang] || cue.text['eng'] || cue.text['orig'] || '';
@@ -233,17 +277,17 @@ function getOrCreateSession(streamUrl, streamId, apiKey) {
   return session;
 }
 
-// Cleanup inactive sessions after 90s
+// Cleanup inactive sessions after 120s
 setInterval(() => {
   const now = Date.now();
   for (const [id, session] of sessions.entries()) {
-    if (now - session.lastAccessTime > 90000) {
+    if (now - session.lastAccessTime > 120000) {
       console.log(`[Transcriber] Cleaning up idle session: ${id}`);
       session.destroy();
       sessions.delete(id);
     }
   }
-}, 15000);
+}, 20000);
 
 module.exports = {
   getOrCreateSession

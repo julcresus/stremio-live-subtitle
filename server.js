@@ -560,25 +560,36 @@ app.get(['/stream/:type/:id.json', '/:config/stream/:type/:id.json'], async (req
     const data = response.data;
 
     if (data && data.streams && Array.isArray(data.streams)) {
-      data.streams = data.streams.map((stream, idx) => {
+      const enhancedStreams = [];
+      data.streams.forEach((stream) => {
         if (stream.url) {
           const streamHash = crypto.createHash('md5').update(stream.url).digest('hex').substring(0, 10);
           const encodedStreamUrl = encodeURIComponent(Buffer.from(stream.url).toString('base64'));
           
-          if (idx === 0) {
-            getOrCreateSession(stream.url, streamHash, GROQ_API_KEY);
-          }
+          getOrCreateSession(stream.url, streamHash, GROQ_API_KEY);
 
           const subtitleTracks = buildSubtitleTracks(host, encodedStreamUrl, streamHash);
 
-          return {
-            ...stream,
-            title: `🎙️ ${stream.title || 'Live Stream'} [AI Subtitles]`,
-            subtitles: subtitleTracks
-          };
+          // Option A: Continuous HLS Master Stream with Native Live Subtitles (Best for TV & long live watching)
+          enhancedStreams.push({
+            name: '🎙️ Live AI Subtitles',
+            title: `${stream.title || 'Live Stream'} · [Continuous AI Subtitles & Multi-Lang]`,
+            url: `${host}/hls/${encodedStreamUrl}/master.m3u8`,
+            subtitles: subtitleTracks,
+            behaviorHints: { notWebReady: false }
+          });
+
+          // Option B: Direct Stream with Subtitle Track
+          enhancedStreams.push({
+            name: 'Live Sports',
+            title: `${stream.title || 'Live Stream'} · [Direct Stream + Subtitles]`,
+            url: stream.url,
+            subtitles: subtitleTracks,
+            behaviorHints: { notWebReady: false }
+          });
         }
-        return stream;
       });
+      data.streams = enhancedStreams;
     }
 
     res.json(data);
@@ -617,8 +628,82 @@ app.get(['/subtitles/:type/:id/:extra?.json', '/:config/subtitles/:type/:id/:ext
 });
 
 // -------------------------------------------------------------
-// WebVTT Subtitles Endpoint (Delivers instant complete VTT to media players)
+// HLS Continuous Master & Subtitle Playlist Endpoints
 // -------------------------------------------------------------
+
+// HLS Master Playlist (Directs video to source + connects continuous live subtitle tracks)
+app.get('/hls/:encodedUrl/master.m3u8', (req, res) => {
+  const { encodedUrl } = req.params;
+  const host = getHostUrl(req);
+  let rawUrl;
+  try {
+    rawUrl = Buffer.from(decodeURIComponent(encodedUrl), 'base64').toString('utf-8');
+  } catch (e) {
+    return res.status(400).send('Invalid stream URL encoding');
+  }
+
+  const streamId = crypto.createHash('md5').update(rawUrl).digest('hex').substring(0, 10);
+  getOrCreateSession(rawUrl, streamId, GROQ_API_KEY);
+
+  let master = `#EXTM3U\n#EXT-X-VERSION:3\n`;
+  master += `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="🎙️ English AI",DEFAULT=YES,AUTOSELECT=YES,FORCED=NO,LANGUAGE="eng",URI="${host}/hls/${encodedUrl}/sub_eng.m3u8"\n`;
+  master += `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="🇫🇷 Français AI",DEFAULT=NO,AUTOSELECT=NO,FORCED=NO,LANGUAGE="fre",URI="${host}/hls/${encodedUrl}/sub_fre.m3u8"\n`;
+  master += `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="🇪🇸 Español AI",DEFAULT=NO,AUTOSELECT=NO,FORCED=NO,LANGUAGE="spa",URI="${host}/hls/${encodedUrl}/sub_spa.m3u8"\n`;
+  master += `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="🇩🇪 Deutsch AI",DEFAULT=NO,AUTOSELECT=NO,FORCED=NO,LANGUAGE="ger",URI="${host}/hls/${encodedUrl}/sub_ger.m3u8"\n`;
+  master += `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="🇮🇹 Italiano AI",DEFAULT=NO,AUTOSELECT=NO,FORCED=NO,LANGUAGE="ita",URI="${host}/hls/${encodedUrl}/sub_ita.m3u8"\n`;
+  master += `#EXT-X-STREAM-INF:BANDWIDTH=3000000,SUBTITLES="subs"\n`;
+  master += `${rawUrl}\n`;
+
+  res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.send(master);
+});
+
+// Continuous Rolling HLS Subtitle Playlist (.m3u8)
+app.get('/hls/:encodedUrl/sub_:lang.m3u8', (req, res) => {
+  const { encodedUrl, lang } = req.params;
+  const host = getHostUrl(req);
+  let rawUrl;
+  try {
+    rawUrl = Buffer.from(decodeURIComponent(encodedUrl), 'base64').toString('utf-8');
+  } catch (e) {
+    return res.status(400).send('Invalid stream URL encoding');
+  }
+
+  const streamId = crypto.createHash('md5').update(rawUrl).digest('hex').substring(0, 10);
+  const session = getOrCreateSession(rawUrl, streamId, GROQ_API_KEY);
+
+  const playlist = session.getHlsSubtitlePlaylist(host, encodedUrl, lang || 'eng');
+
+  res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.send(playlist);
+});
+
+// HLS Subtitle Segment Chunk (.vtt)
+app.get('/hls/:encodedUrl/seg_:segId_:lang.vtt', (req, res) => {
+  const { encodedUrl, segId, lang } = req.params;
+  let rawUrl;
+  try {
+    rawUrl = Buffer.from(decodeURIComponent(encodedUrl), 'base64').toString('utf-8');
+  } catch (e) {
+    return res.status(400).send('Invalid stream URL encoding');
+  }
+
+  const streamId = crypto.createHash('md5').update(rawUrl).digest('hex').substring(0, 10);
+  const session = getOrCreateSession(rawUrl, streamId, GROQ_API_KEY);
+
+  const vtt = session.getSegmentVTT(segId, lang || 'eng');
+
+  res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.send(vtt);
+});
+
+// WebVTT Subtitles Endpoint (Direct standalone file)
 app.get(['/subtitles/:encodedUrl/:lang/live.vtt', '/subtitles/:encodedUrl/live.vtt'], (req, res) => {
   const { encodedUrl, lang } = req.params;
   let rawUrl;
