@@ -471,16 +471,17 @@ updateUrl();
 });
 
 // -------------------------------------------------------------
-// Manifest Handler (Supports standard & configured /:config routes)
+// Universal Upstream Path Resolver
 // -------------------------------------------------------------
-app.get(['/manifest.json', '/:config/manifest.json'], async (req, res) => {
-  const config = req.params.config;
-  const upstreamManifestUrl = config 
-    ? `${HIGHFLY_BASE}/${config}/manifest.json`
-    : `${HIGHFLY_BASE}/manifest.json`;
+function getUpstreamUrl(req) {
+  return `${HIGHFLY_BASE}${req.path}`;
+}
 
+// 1. Manifest Handler
+app.get(['/manifest.json', '*/manifest.json'], async (req, res) => {
   try {
-    const response = await axios.get(upstreamManifestUrl);
+    const upstreamUrl = getUpstreamUrl(req);
+    const response = await axios.get(upstreamUrl);
     const manifest = response.data;
     
     manifest.id = 'community.sports.live_ai_subtitles';
@@ -488,7 +489,6 @@ app.get(['/manifest.json', '/:config/manifest.json'], async (req, res) => {
     manifest.description = 'Live sports streams with real-time AI commentary subtitles & translation.';
     manifest.logo = 'https://cdn-icons-png.flaticon.com/512/860/860330.png';
     
-    // Enable Configure button in Stremio app UI
     manifest.behaviorHints = {
       configurable: true,
       configurationRequired: false
@@ -508,38 +508,22 @@ app.get(['/manifest.json', '/:config/manifest.json'], async (req, res) => {
   }
 });
 
-// Catalog Proxy (With and without config)
-app.get(['/catalog/:type/:id/:extra?.json', '/:config/catalog/:type/:id/:extra?.json'], async (req, res) => {
-  const { config, type, id, extra } = req.params;
-  let upstreamUrl;
-
-  if (config) {
-    upstreamUrl = extra 
-      ? `${HIGHFLY_BASE}/${config}/catalog/${type}/${id}/${extra}.json`
-      : `${HIGHFLY_BASE}/${config}/catalog/${type}/${id}.json`;
-  } else {
-    upstreamUrl = extra 
-      ? `${HIGHFLY_BASE}/catalog/${type}/${id}/${extra}.json`
-      : `${HIGHFLY_BASE}/catalog/${type}/${id}.json`;
-  }
-
+// 2. Catalog Proxy
+app.get(['/catalog/*', '*/catalog/*'], async (req, res) => {
   try {
+    const upstreamUrl = getUpstreamUrl(req);
     const response = await axios.get(upstreamUrl);
     res.json(response.data);
   } catch (error) {
-    console.error(`[Addon] Catalog error:`, error.message);
+    console.error(`[Addon] Catalog error (${req.path}):`, error.message);
     res.status(500).json({ metas: [] });
   }
 });
 
-// Meta Proxy
-app.get(['/meta/:type/:id.json', '/:config/meta/:type/:id.json'], async (req, res) => {
-  const { config, type, id } = req.params;
-  const upstreamUrl = config 
-    ? `${HIGHFLY_BASE}/${config}/meta/${type}/${id}.json`
-    : `${HIGHFLY_BASE}/meta/${type}/${id}.json`;
-
+// 3. Meta Proxy
+app.get(['/meta/*', '*/meta/*'], async (req, res) => {
   try {
+    const upstreamUrl = getUpstreamUrl(req);
     const response = await axios.get(upstreamUrl);
     res.json(response.data);
   } catch (error) {
@@ -547,15 +531,11 @@ app.get(['/meta/:type/:id.json', '/:config/meta/:type/:id.json'], async (req, re
   }
 });
 
-// Stream Proxy with Pre-Warming & Multilingual Live Subtitles
-app.get(['/stream/:type/:id.json', '/:config/stream/:type/:id.json'], async (req, res) => {
-  const { config, type, id } = req.params;
+// 4. Stream Proxy
+app.get(['/stream/*', '*/stream/*'], async (req, res) => {
   const host = getHostUrl(req);
-  const upstreamUrl = config 
-    ? `${HIGHFLY_BASE}/${config}/stream/${type}/${id}.json`
-    : `${HIGHFLY_BASE}/stream/${type}/${id}.json`;
-
   try {
+    const upstreamUrl = getUpstreamUrl(req);
     const response = await axios.get(upstreamUrl);
     const data = response.data;
 
@@ -567,7 +547,6 @@ app.get(['/stream/:type/:id.json', '/:config/stream/:type/:id.json'], async (req
           const encodedStreamUrl = encodeURIComponent(Buffer.from(stream.url).toString('base64'));
           
           getOrCreateSession(stream.url, streamHash, GROQ_API_KEY);
-
           const subtitleTracks = buildSubtitleTracks(host, encodedStreamUrl, streamHash);
 
           // Option A: Continuous HLS Master Stream with Native Live Subtitles (Best for TV & long live watching)
@@ -599,15 +578,12 @@ app.get(['/stream/:type/:id.json', '/:config/stream/:type/:id.json'], async (req
   }
 });
 
-// Subtitles Resource Endpoint
-app.get(['/subtitles/:type/:id/:extra?.json', '/:config/subtitles/:type/:id/:extra?.json'], async (req, res) => {
-  const { config, type, id } = req.params;
+// 5. Subtitles Resource Endpoint
+app.get(['/subtitles/sport/*', '*/subtitles/sport/*'], async (req, res) => {
   const host = getHostUrl(req);
-  const upstreamUrl = config 
-    ? `${HIGHFLY_BASE}/${config}/stream/${type}/${id}.json`
-    : `${HIGHFLY_BASE}/stream/${type}/${id}.json`;
-
   try {
+    const streamPath = req.path.replace(/.*\/subtitles\//, '/stream/');
+    const upstreamUrl = `${HIGHFLY_BASE}${streamPath}`;
     const streamRes = await axios.get(upstreamUrl);
     const streams = streamRes.data?.streams || [];
     
