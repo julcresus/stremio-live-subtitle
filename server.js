@@ -21,7 +21,8 @@ function getHostUrl(req) {
 }
 
 const SUPPORTED_LANGUAGES = [
-  { code: 'eng', label: '🎙️ Live English (Original)' },
+  { code: 'orig', label: '🎙️ Original Audio (Live Speech)' },
+  { code: 'eng', label: '🇬🇧 English (Live AI Translation)' },
   { code: 'fre', label: '🇫🇷 Français (Traduction AI)' },
   { code: 'spa', label: '🇪🇸 Español (Traducción AI)' },
   { code: 'ger', label: '🇩🇪 Deutsch (AI Übersetzung)' },

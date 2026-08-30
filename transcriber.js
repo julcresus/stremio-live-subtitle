@@ -77,17 +77,26 @@ class StreamSession {
         try {
           const stats = fs.statSync(filePath);
           if (stats.size > 1000) {
-            const rawEnglishText = await this.transcribeAudioChunk(filePath);
-            if (rawEnglishText && rawEnglishText.trim().length > 0) {
-              const cleanedText = rawEnglishText.trim();
+            const rawSpeech = await this.transcribeAudioChunk(filePath);
+            if (rawSpeech && rawSpeech.trim().length > 0) {
+              const originalText = rawSpeech.trim();
 
-              // Generate translations
+              // Translate concurrently into supported languages
+              const [english, french, spanish, german, italian] = await Promise.all([
+                this.translateText(originalText, 'English'),
+                this.translateText(originalText, 'French'),
+                this.translateText(originalText, 'Spanish'),
+                this.translateText(originalText, 'German'),
+                this.translateText(originalText, 'Italian')
+              ]);
+
               const translations = {
-                eng: cleanedText,
-                fre: await this.translateText(cleanedText, 'French'),
-                spa: await this.translateText(cleanedText, 'Spanish'),
-                ger: await this.translateText(cleanedText, 'German'),
-                ita: await this.translateText(cleanedText, 'Italian')
+                orig: originalText,
+                eng: english,
+                fre: french,
+                spa: spanish,
+                ger: german,
+                ita: italian
               };
 
               const newCue = {
@@ -98,9 +107,9 @@ class StreamSession {
               this.cues.push(newCue);
               if (this.cues.length > 50) this.cues.shift();
 
-              console.log(`[Transcriber] [${this.streamId}] Subtitle: "${cleanedText}"`);
+              console.log(`[Transcriber] [${this.streamId}] (Orig): "${originalText}" -> (EN): "${english}"`);
 
-              // Broadcast new cue to all connected Stremio players with synchronized player timestamps
+              // Broadcast new cue to all connected Stremio players with synchronized timestamps
               this.broadcastCue(newCue);
             }
           }
@@ -140,21 +149,21 @@ class StreamSession {
   }
 
   async translateText(text, targetLanguage) {
-    if (!this.apiKey || !text || targetLanguage === 'English') return text;
+    if (!this.apiKey || !text) return text;
 
     try {
-      const prompt = `Translate this sports commentary sentence into ${targetLanguage}. Output ONLY the translated text, no quotes or notes:\n\n${text}`;
+      const prompt = `Translate the following sports commentary line into ${targetLanguage}. If it is already in ${targetLanguage}, just keep it as is. Output ONLY the translation without any quotes, notes, or explanations:\n\n"${text}"`;
       const response = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
         model: 'llama-3.1-8b-instant',
         messages: [{ role: 'user', content: prompt }],
         temperature: 0.1,
-        max_tokens: 100
+        max_tokens: 120
       }, {
         headers: {
           'Authorization': `Bearer ${this.apiKey}`,
           'Content-Type': 'application/json'
         },
-        timeout: 3000
+        timeout: 3500
       });
 
       return response.data.choices[0]?.message?.content?.replace(/^["']|["']$/g, '').trim() || text;
@@ -177,10 +186,10 @@ class StreamSession {
     // Send WebVTT Header
     res.write("WEBVTT\n\n");
 
-    // If we have recent cues, send the latest one starting at player timestamp 00:00:00
+    // If we have recent cues, send the latest one at timestamp 00:00:00
     if (this.cues.length > 0) {
       const latest = this.cues[this.cues.length - 1];
-      const text = latest.text[lang] || latest.text['eng'] || '';
+      const text = latest.text[lang] || latest.text['eng'] || latest.text['orig'] || '';
       res.write(`00:00:00.000 --> 00:00:04.000\n${text}\n\n`);
     } else {
       res.write(`00:00:00.000 --> 00:00:04.000\n[🎙️ Live AI Subtitles Connecting...]\n\n`);
@@ -210,12 +219,11 @@ class StreamSession {
     for (const listener of this.listeners) {
       try {
         if (!listener.res.writableEnded && !listener.res.closed) {
-          // Calculate player elapsed time relative to when THIS player started
           const elapsed = (now - listener.connectedAt) / 1000;
           const startSec = Math.max(0, elapsed);
           const endSec = startSec + 4.5;
 
-          const text = cue.text[listener.lang] || cue.text['eng'] || '';
+          const text = cue.text[listener.lang] || cue.text['eng'] || cue.text['orig'] || '';
           listener.res.write(`${formatTime(startSec)} --> ${formatTime(endSec)}\n${text}\n\n`);
         }
       } catch (e) {
