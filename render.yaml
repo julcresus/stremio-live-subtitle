@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: stremio-live-subtitles
+    env: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: PORT
+        value: 7000
+      - key: GROQ_API_KEY
+        sync: false
