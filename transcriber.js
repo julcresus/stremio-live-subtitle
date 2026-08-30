@@ -315,22 +315,29 @@ function getOrCreateSession(streamUrl, streamId, apiKey) {
     return session;
   }
 
+  // Terminate any previous sessions so only 1 stream runs at a time
+  for (const [id, oldSession] of sessions.entries()) {
+    console.log(`[Transcriber] Terminating previous session ${id} for new stream ${streamId}`);
+    oldSession.destroy();
+    sessions.delete(id);
+  }
+
   const session = new StreamSession(streamUrl, streamId, apiKey);
   sessions.set(streamId, session);
   return session;
 }
 
-// Cleanup inactive sessions after 120s
+// Cleanup inactive sessions after 45s
 setInterval(() => {
   const now = Date.now();
   for (const [id, session] of sessions.entries()) {
-    if (now - session.lastAccessTime > 120000) {
+    if (now - session.lastAccessTime > 45000) {
       console.log(`[Transcriber] Cleaning up idle session: ${id}`);
       session.destroy();
       sessions.delete(id);
     }
   }
-}, 20000);
+}, 10000);
 
 module.exports = {
   getOrCreateSession

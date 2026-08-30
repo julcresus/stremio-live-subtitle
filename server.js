@@ -545,7 +545,6 @@ app.get(['/stream/*', '*/stream/*'], async (req, res) => {
           const streamHash = crypto.createHash('md5').update(stream.url).digest('hex').substring(0, 10);
           const encodedStreamUrl = encodeURIComponent(Buffer.from(stream.url).toString('base64'));
           
-          getOrCreateSession(stream.url, streamHash, GROQ_API_KEY);
           const subtitleTracks = buildSubtitleTracks(host, encodedStreamUrl, streamHash);
 
           return {
@@ -579,7 +578,6 @@ app.get(['/subtitles/sport/*', '*/subtitles/sport/*'], async (req, res) => {
       const streamHash = crypto.createHash('md5').update(streamUrl).digest('hex').substring(0, 10);
       const encodedStreamUrl = encodeURIComponent(Buffer.from(streamUrl).toString('base64'));
       
-      getOrCreateSession(streamUrl, streamHash, GROQ_API_KEY);
       subtitles = buildSubtitleTracks(host, encodedStreamUrl, streamHash);
     }
 
