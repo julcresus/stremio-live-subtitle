@@ -750,28 +750,195 @@ app.get('/hls/:encodedUrl/seg_:segId_:lang.vtt', (req, res) => {
   res.send(vtt);
 });
 
-// WebVTT Subtitles Endpoint (Direct standalone file)
-app.get(['/subtitles/:encodedUrl/:lang/live.vtt', '/subtitles/:encodedUrl/live.vtt'], (req, res) => {
-  const { encodedUrl, lang } = req.params;
+// -------------------------------------------------------------
+// Real-time Live Subtitle Web Overlay & SSE Feed
+// -------------------------------------------------------------
+
+// SSE Real-time Events
+app.get('/events/:encodedUrl', (req, res) => {
+  const { encodedUrl } = req.params;
   let rawUrl;
   try {
-    const decoded = decodeURIComponent(encodedUrl);
-    rawUrl = Buffer.from(decoded, 'base64').toString('utf-8');
+    rawUrl = Buffer.from(decodeURIComponent(encodedUrl), 'base64').toString('utf-8');
   } catch (e) {
-    return res.status(400).send('Invalid stream URL encoding');
+    return res.status(400).send('Invalid stream URL');
   }
 
   const streamId = crypto.createHash('md5').update(rawUrl).digest('hex').substring(0, 10);
   const session = getOrCreateSession(rawUrl, streamId, GROQ_API_KEY);
 
-  const vttContent = session.getWebVTT(lang || 'eng');
+  session.attachSseListener(res);
+});
 
-  res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-  res.send(vttContent);
+// Live Floating Caption Viewer UI
+app.get(['/live/:encodedUrl', '/live'], (req, res) => {
+  const encodedUrl = req.params.encodedUrl || '';
+  res.send(`
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🎙️ Live AI Commentary Subtitles</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{
+  background:#090d16;
+  color:#f8fafc;
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  min-height:100vh;
+  display:flex;
+  flex-direction:column;
+  padding:16px;
+}
+.header{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  padding-bottom:12px;
+  border-bottom:1px solid #1e293b;
+  flex-wrap:wrap;
+  gap:10px;
+}
+.title{font-size:16px;font-weight:700;color:#38bdf8;display:flex;align-items:center;gap:6px;}
+.badge{background:#1e293b;color:#4ade80;font-size:11px;padding:3px 8px;border-radius:100px;font-weight:600;}
+.controls{display:flex;align-items:center;gap:8px;}
+.lang-btn{
+  background:#1e293b;color:#94a3b8;border:1px solid #334155;border-radius:6px;
+  padding:6px 10px;font-size:12px;cursor:pointer;font-weight:500;transition:all 0.15s;
+}
+.lang-btn.active{background:#0284c7;color:#fff;border-color:#0284c7;}
+.font-btn{background:#1e293b;color:#cbd5e1;border:none;border-radius:6px;padding:6px 10px;font-size:12px;cursor:pointer;}
+.subs-container{
+  flex:1;
+  overflow-y:auto;
+  margin-top:16px;
+  display:flex;
+  flex-direction:column;
+  gap:12px;
+  padding-bottom:30px;
+}
+.cue-card{
+  background:rgba(30,41,59,0.7);
+  backdrop-filter:blur(8px);
+  border-left:4px solid #38bdf8;
+  border-radius:8px;
+  padding:14px 18px;
+  font-size:18px;
+  line-height:1.5;
+  color:#f1f5f9;
+  animation:fadeIn 0.2s ease-out;
+}
+.cue-card.highlight{border-left-color:#4ade80;background:rgba(30,41,59,0.95);font-weight:600;}
+.cue-time{font-size:11px;color:#64748b;margin-bottom:4px;font-family:monospace;}
+@keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+.placeholder{color:#64748b;font-size:14px;text-align:center;margin-top:40px;}
+</style>
+</head>
+<body>
+<div class="header">
+  <div class="title">
+    <span>🎙️ Live Commentary</span>
+    <span class="badge" id="statusBadge">● LIVE</span>
+  </div>
+  <div class="controls">
+    <button class="lang-btn active" data-lang="eng">🇬🇧 EN</button>
+    <button class="lang-btn" data-lang="fre">🇫🇷 FR</button>
+    <button class="lang-btn" data-lang="spa">🇪🇸 ES</button>
+    <button class="lang-btn" data-lang="orig">🎙️ Orig</button>
+    <button class="font-btn" id="fontDown">A-</button>
+    <button class="font-btn" id="fontUp">A+</button>
+  </div>
+</div>
+
+<div class="subs-container" id="subsList">
+  <div class="placeholder" id="emptyNote">Connecting to live commentary stream...</div>
+</div>
+
+<script>
+let currentLang = 'eng';
+let fontSize = 18;
+const subsList = document.getElementById('subsList');
+const encodedUrl = "${encodedUrl}";
+
+document.querySelectorAll('.lang-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.lang-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentLang = btn.dataset.lang;
+    renderAll();
+  });
+});
+
+document.getElementById('fontUp').addEventListener('click', () => {
+  fontSize = Math.min(32, fontSize + 2);
+  document.querySelectorAll('.cue-card').forEach(c => c.style.fontSize = fontSize + 'px');
+});
+
+document.getElementById('fontDown').addEventListener('click', () => {
+  fontSize = Math.max(12, fontSize - 2);
+  document.querySelectorAll('.cue-card').forEach(c => c.style.fontSize = fontSize + 'px');
+});
+
+let allCues = [];
+
+function addCue(cue) {
+  allCues.push(cue);
+  if (allCues.length > 50) allCues.shift();
+  document.getElementById('emptyNote')?.remove();
+
+  const card = document.createElement('div');
+  card.className = 'cue-card highlight';
+  card.style.fontSize = fontSize + 'px';
+
+  const text = cue.text[currentLang] || cue.text['eng'] || cue.text['orig'] || '';
+  const time = new Date(cue.createdAt).toLocaleTimeString();
+  card.innerHTML = '<div class="cue-time">' + time + '</div><div>' + text + '</div>';
+
+  document.querySelectorAll('.cue-card').forEach(c => c.classList.remove('highlight'));
+  subsList.appendChild(card);
+  subsList.scrollTop = subsList.scrollHeight;
+}
+
+function renderAll() {
+  subsList.innerHTML = '';
+  if (allCues.length === 0) {
+    subsList.innerHTML = '<div class="placeholder">Waiting for next live commentary speech...</div>';
+    return;
+  }
+  allCues.forEach(cue => {
+    const card = document.createElement('div');
+    card.className = 'cue-card';
+    card.style.fontSize = fontSize + 'px';
+    const text = cue.text[currentLang] || cue.text['eng'] || cue.text['orig'] || '';
+    const time = new Date(cue.createdAt).toLocaleTimeString();
+    card.innerHTML = '<div class="cue-time">' + time + '</div><div>' + text + '</div>';
+    subsList.appendChild(card);
+  });
+  subsList.scrollTop = subsList.scrollHeight;
+}
+
+if (encodedUrl) {
+  const es = new EventSource('/events/' + encodeURIComponent(encodedUrl));
+  es.onmessage = (e) => {
+    try {
+      const data = JSON.parse(e.data);
+      if (data.type === 'history' && Array.isArray(data.cues)) {
+        allCues = data.cues;
+        renderAll();
+      } else if (data.type === 'cue') {
+        addCue(data.cue);
+      }
+    } catch(err) {}
+  };
+}
+</script>
+</body>
+</html>
+  `);
 });
 
 app.listen(PORT, () => {
   console.log(`\n🚀 Stremio Sports Streams + Live AI Subtitles running on port ${PORT}`);
 });
+

@@ -15,12 +15,39 @@ class StreamSession {
     this.apiKey = apiKey;
     this.cues = []; // { segId: number, text: { [lang]: string }, createdAt: number }
     this.segCounter = 0;
+    this.sseListeners = new Set();
     this.lastAccessTime = Date.now();
     this.isAlive = true;
     this.tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `sub_${streamId}_`));
     this.ffmpegProc = null;
 
     this.startAudioCapture();
+  }
+
+  attachSseListener(res) {
+    this.touch();
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+
+    // Send history
+    res.write(`data: ${JSON.stringify({ type: 'history', cues: this.cues })}\n\n`);
+
+    const listener = (cue) => {
+      res.write(`data: ${JSON.stringify({ type: 'cue', cue })}\n\n`);
+    };
+
+    this.sseListeners.add(listener);
+
+    const heartbeat = setInterval(() => {
+      res.write(`: heartbeat\n\n`);
+    }, 5000);
+
+    res.on('close', () => {
+      clearInterval(heartbeat);
+      this.sseListeners.delete(listener);
+    });
   }
 
   touch() {
@@ -114,6 +141,13 @@ class StreamSession {
               if (this.cues.length > 40) this.cues.shift();
 
               console.log(`[Transcriber] [${this.streamId}] (Seg ${this.segCounter}) "${originalText}" -> EN: "${english}"`);
+
+              // Broadcast live to all connected SSE browser overlays
+              if (this.sseListeners) {
+                for (const listener of this.sseListeners) {
+                  try { listener(newCue); } catch (_) {}
+                }
+              }
             }
           }
         } catch (e) {
