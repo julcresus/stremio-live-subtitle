@@ -37,77 +37,461 @@ function buildSubtitleTracks(host, encodedStreamUrl, streamHash) {
   }));
 }
 
-// -------------------------------------------------------------
-// Landing Page with 1-Click Install Options
-// -------------------------------------------------------------
-app.get('/', (req, res) => {
-  const host = getHostUrl(req);
-  const cleanHost = host.replace(/^https?:\/\//, '');
+// Proxy sports list from upstream
+app.get('/sports.json', async (req, res) => {
+  try {
+    const response = await axios.get(`${HIGHFLY_BASE}/sports.json`);
+    res.json(response.data);
+  } catch (err) {
+    res.json([
+      { id: 'football', name: 'Football' },
+      { id: 'basketball', name: 'Basketball' },
+      { id: 'fight', name: 'Fight (UFC, Boxing)' },
+      { id: 'motorsports', name: 'Motor Sports' },
+      { id: 'tennis', name: 'Tennis' },
+      { id: 'american-football', name: 'American Football' },
+      { id: 'hockey', name: 'Hockey' },
+      { id: 'baseball', name: 'Baseball' },
+      { id: 'rugby', name: 'Rugby' },
+      { id: 'cricket', name: 'Cricket' },
+      { id: 'golf', name: 'Golf' },
+      { id: 'billiards', name: 'Billiards' },
+      { id: 'afl', name: 'AFL' },
+      { id: 'darts', name: 'Darts' },
+      { id: 'other', name: 'Other' }
+    ]);
+  }
+});
 
+// -------------------------------------------------------------
+// Interactive Configuration Page (/ & /configure)
+// -------------------------------------------------------------
+app.get(['/', '/configure'], (req, res) => {
   res.send(`
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <meta charset="utf-8"/>
-        <meta name="viewport" content="width=device-width, initial-scale=1"/>
-        <title>Live Sports AI Subtitles & Translation for Stremio</title>
-        <style>
-          body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0b0f19; color: #f8fafc; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 24px; box-sizing: border-box; }
-          .container { background: #161f30; padding: 36px; border-radius: 20px; box-shadow: 0 20px 40px rgba(0,0,0,0.6); max-width: 580px; width: 100%; border: 1px solid #1e293b; text-align: center; }
-          h1 { color: #38bdf8; margin: 0 0 10px; font-size: 26px; }
-          p { color: #94a3b8; line-height: 1.6; font-size: 15px; margin-bottom: 24px; }
-          .addon-card { background: #0f172a; border: 1px solid #334155; border-radius: 12px; padding: 20px; margin-bottom: 20px; text-align: left; }
-          .addon-card h3 { margin: 0 0 6px; color: #e2e8f0; font-size: 17px; }
-          .addon-card p { margin: 0 0 14px; font-size: 13px; color: #64748b; }
-          .btn { display: inline-block; background: #0284c7; color: #fff; text-decoration: none; padding: 12px 22px; border-radius: 8px; font-weight: 600; font-size: 14px; transition: all 0.2s; }
-          .btn:hover { background: #0369a1; transform: translateY(-1px); }
-          .status { margin-top: 16px; font-size: 13px; color: ${GROQ_API_KEY ? '#4ade80' : '#f87171'}; }
-          .url-box { background: #0b0f19; padding: 10px; border-radius: 6px; font-family: monospace; font-size: 12px; color: #94a3b8; word-break: break-all; margin-top: 10px; }
-          .flags { margin: 12px 0 0; font-size: 14px; color: #cbd5e1; }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <h1>🎙️ Live Sports AI Subtitles & Translation</h1>
-          <p>Real-time speech-to-text live commentary subtitles + multilingual live translation on LG TV, Mac, and Mobile.</p>
-          
-          <div class="addon-card">
-            <h3>Live Sports (AI Subtitles & Translations)</h3>
-            <p>Live sports matches with continuous real-time subtitles and instant translation into English, French, Spanish, German, and Italian.</p>
-            <a class="btn" href="stremio://${cleanHost}/manifest.json">Install Add-on to Stremio</a>
-            <div class="flags">Languages: 🎙️ English · 🇫🇷 Français · 🇪🇸 Español · 🇩🇪 Deutsch · 🇮🇹 Italiano</div>
-            <div class="url-box">${host}/manifest.json</div>
-          </div>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Configure Sports Streams + Live Subtitles</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-text-size-adjust:100%}
+body{
+  background:#1c1f26;
+  color:#c8cdd8;
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+  -webkit-font-smoothing:antialiased;
+  min-height:100vh;
+  display:flex;
+  justify-content:center;
+  padding:0 20px;
+}
+.page{
+  width:100%;
+  max-width:400px;
+  padding:44px 0 80px;
+}
+.app-name{
+  font-size:22px;
+  font-weight:700;
+  color:#eef0f5;
+  letter-spacing:-0.3px;
+  display:flex;
+  align-items:center;
+  gap:8px;
+}
+.app-sub{
+  margin-top:8px;
+  font-size:13px;
+  color:#6b7280;
+  line-height:1.5;
+}
+section{margin-top:32px}
+.sec-label{
+  font-size:10px;
+  font-weight:600;
+  letter-spacing:1.8px;
+  text-transform:uppercase;
+  color:#4b5563;
+  margin-bottom:12px;
+}
+.sec-hint{
+  font-size:12.5px;
+  color:#6b7280;
+  margin-bottom:14px;
+  line-height:1.5;
+}
+.pill-grid{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+}
+.pill{
+  padding:8px 14px;
+  background:#252831;
+  color:#9ca3af;
+  font-size:12.5px;
+  font-weight:500;
+  border-radius:100px;
+  cursor:pointer;
+  user-select:none;
+  transition:background .15s,color .15s;
+}
+.pill.selected{
+  background:#1e3a5f;
+  color:#60a5fa;
+  border:1px solid #3b82f6;
+}
+.toggle-row{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  padding:12px 0;
+  border-bottom:1px solid #252831;
+}
+.toggle-label{
+  font-size:13.5px;
+  color:#c8cdd8;
+  font-weight:500;
+}
+.toggle-sub{
+  font-size:11.5px;
+  color:#6b7280;
+  margin-top:2px;
+}
+.toggle{
+  position:relative;
+  width:44px;
+  height:24px;
+  flex-shrink:0;
+}
+.toggle input{
+  opacity:0;
+  width:0;
+  height:0;
+  position:absolute;
+}
+.toggle-track{
+  position:absolute;
+  inset:0;
+  background:#2d3140;
+  border-radius:100px;
+  cursor:pointer;
+  transition:background .15s;
+}
+.toggle input:checked + .toggle-track{
+  background:#2563eb;
+}
+.toggle-thumb{
+  position:absolute;
+  top:3px;
+  left:3px;
+  width:18px;
+  height:18px;
+  background:#fff;
+  border-radius:50%;
+  transition:transform .15s;
+  pointer-events:none;
+}
+.toggle input:checked ~ .toggle-thumb{
+  transform:translateX(20px);
+}
+.ai-badge{
+  display:inline-block;
+  background:rgba(37,99,235,0.2);
+  color:#60a5fa;
+  padding:3px 8px;
+  border-radius:6px;
+  font-size:11px;
+  font-weight:600;
+  margin-top:12px;
+}
+.install-area{margin-top:36px}
+.install-btn{
+  display:block;
+  width:100%;
+  padding:14px;
+  background:#2563eb;
+  color:#fff;
+  font-size:14px;
+  font-weight:600;
+  font-family:inherit;
+  text-align:center;
+  border-radius:10px;
+  border:none;
+  cursor:pointer;
+  transition:background .15s;
+  text-decoration:none;
+}
+.install-btn:hover{background:#1d4ed8}
+.web-btn{
+  display:block;
+  width:100%;
+  padding:14px;
+  background:#252831;
+  color:#eef0f5;
+  font-size:14px;
+  font-weight:600;
+  font-family:inherit;
+  text-align:center;
+  border-radius:10px;
+  border:none;
+  cursor:pointer;
+  margin-top:10px;
+  transition:background .15s;
+  text-decoration:none;
+}
+.web-btn:hover{background:#2d3140}
+.link-row{
+  margin-top:16px;
+  display:flex;
+  align-items:center;
+  gap:10px;
+}
+.link-url{
+  flex:1;
+  font-size:11px;
+  color:#6b7280;
+  word-break:break-all;
+  line-height:1.5;
+  font-family:monospace;
+  background:#14171e;
+  padding:8px 10px;
+  border-radius:6px;
+}
+.copy-btn{
+  background:#252831;
+  border:none;
+  color:#c8cdd8;
+  font-size:12px;
+  font-weight:600;
+  font-family:inherit;
+  cursor:pointer;
+  padding:8px 12px;
+  border-radius:6px;
+  white-space:nowrap;
+  transition:background .15s;
+}
+.copy-btn:hover{background:#2d3140}
+.status-msg{margin-top:6px;font-size:11px;color:#4ade80;text-align:center;min-height:16px}
+</style>
+</head>
+<body>
+<div class="page">
 
-          <div class="status">● AI Engine: ${GROQ_API_KEY ? 'Active (Groq Whisper + Llama Translation)' : 'API Key Missing'}</div>
-        </div>
-      </body>
-    </html>
+  <div class="app-name">🎙️ Sports Streams</div>
+  <div class="app-sub">Filter what appears in your catalogs. Settings are saved in the addon URL. Reinstall to apply.</div>
+  <div class="ai-badge">✨ Real-Time AI Subtitles & Multi-Language Translation Enabled</div>
+
+  <section>
+    <div class="sec-label">Preferences</div>
+    <div class="toggle-row">
+      <div>
+        <div class="toggle-label">Live matches only</div>
+        <div class="toggle-sub">Hide scheduled matches, show only what is live right now.</div>
+      </div>
+      <label class="toggle">
+        <input type="checkbox" id="onlyLiveToggle">
+        <div class="toggle-track"></div>
+        <div class="toggle-thumb"></div>
+      </label>
+    </div>
+    <div class="toggle-row">
+      <div>
+        <div class="toggle-label">Hide titles</div>
+        <div class="toggle-sub">Show posters only. Titles are hidden on catalog cards.</div>
+      </div>
+      <label class="toggle">
+        <input type="checkbox" id="hideTitlesToggle">
+        <div class="toggle-track"></div>
+        <div class="toggle-thumb"></div>
+      </label>
+    </div>
+    <div class="toggle-row">
+      <div>
+        <div class="toggle-label">Hide descriptions</div>
+        <div class="toggle-sub">Hide the description text under catalog cards.</div>
+      </div>
+      <label class="toggle">
+        <input type="checkbox" id="hideDescToggle">
+        <div class="toggle-track"></div>
+        <div class="toggle-thumb"></div>
+      </label>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-label">Sports</div>
+    <div class="sec-hint">Tap sports to show only those in your catalogs. Tap again to deselect. If none selected, all sports are shown.</div>
+    <div class="pill-grid" id="sportGrid"></div>
+  </section>
+
+  <div class="install-area">
+    <button class="install-btn" id="installBtn">Install in Stremio</button>
+    <button class="web-btn" id="webBtn">Add to Stremio Web</button>
+    <div class="link-row">
+      <div class="link-url" id="linkUrl"></div>
+      <button class="copy-btn" id="copyBtn">Copy</button>
+    </div>
+    <div class="status-msg" id="statusMsg"></div>
+  </div>
+
+</div>
+
+<script>
+let allSports = [];
+let inclSports = new Set();
+let onlyLive = false;
+let hideTitles = false;
+let hideDesc = false;
+
+// Prepopulate from URL hash if reconfiguring
+try {
+  const h = location.hash.slice(1);
+  if (h) {
+    let b = h.replace(/-/g,'+').replace(/_/g,'/');
+    while (b.length % 4) b += '=';
+    const c = JSON.parse(atob(b));
+    (c.includeSports || []).forEach(s => inclSports.add(s));
+    onlyLive = !!c.onlyLive;
+    hideTitles = !!c.hideTitles;
+    hideDesc = !!c.hideDescriptions;
+  }
+} catch(e) {}
+
+document.getElementById('onlyLiveToggle').checked = onlyLive;
+document.getElementById('onlyLiveToggle').addEventListener('change', e => {
+  onlyLive = e.target.checked;
+  updateUrl();
+});
+
+document.getElementById('hideTitlesToggle').checked = hideTitles;
+document.getElementById('hideTitlesToggle').addEventListener('change', e => {
+  hideTitles = e.target.checked;
+  updateUrl();
+});
+
+document.getElementById('hideDescToggle').checked = hideDesc;
+document.getElementById('hideDescToggle').addEventListener('change', e => {
+  hideDesc = e.target.checked;
+  updateUrl();
+});
+
+async function loadSports() {
+  try {
+    const res = await fetch('/sports.json');
+    allSports = await res.json();
+  } catch(e) {
+    allSports = [
+      { id: 'football', name: 'Football' },
+      { id: 'basketball', name: 'Basketball' },
+      { id: 'fight', name: 'Fight (UFC, Boxing)' },
+      { id: 'motorsports', name: 'Motor Sports' },
+      { id: 'tennis', name: 'Tennis' },
+      { id: 'american-football', name: 'American Football' },
+      { id: 'hockey', name: 'Hockey' },
+      { id: 'baseball', name: 'Baseball' },
+      { id: 'rugby', name: 'Rugby' },
+      { id: 'cricket', name: 'Cricket' },
+      { id: 'golf', name: 'Golf' },
+      { id: 'billiards', name: 'Billiards' },
+      { id: 'afl', name: 'AFL' },
+      { id: 'darts', name: 'Darts' },
+      { id: 'other', name: 'Other' }
+    ];
+  }
+  renderSports();
+}
+
+function renderSports() {
+  const grid = document.getElementById('sportGrid');
+  grid.innerHTML = '';
+  allSports.forEach(s => {
+    const el = document.createElement('div');
+    el.className = 'pill' + (inclSports.has(s.id) ? ' selected' : '');
+    el.textContent = s.name;
+    el.addEventListener('click', () => {
+      if (inclSports.has(s.id)) inclSports.delete(s.id);
+      else inclSports.add(s.id);
+      el.classList.toggle('selected');
+      updateUrl();
+    });
+    grid.appendChild(el);
+  });
+}
+
+function buildConfig() {
+  const c = {};
+  if (inclSports.size) c.includeSports = [...inclSports];
+  if (onlyLive) c.onlyLive = true;
+  if (hideTitles) c.hideTitles = true;
+  if (hideDesc) c.hideDescriptions = true;
+  return c;
+}
+
+function encodeConfig(c) {
+  if (!Object.keys(c).length) return '';
+  return btoa(JSON.stringify(c)).replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/,'');
+}
+
+function getManifestUrl() {
+  const enc = encodeConfig(buildConfig());
+  const origin = window.location.origin;
+  return enc ? origin + '/' + enc + '/manifest.json' : origin + '/manifest.json';
+}
+
+function updateUrl() {
+  document.getElementById('linkUrl').textContent = getManifestUrl();
+}
+
+document.getElementById('installBtn').addEventListener('click', () => {
+  window.open(getManifestUrl().replace(/^https?:\\/\\//, 'stremio://'), '_blank');
+});
+
+document.getElementById('webBtn').addEventListener('click', () => {
+  window.open('https://web.stremio.com/#/addons?addon=' + encodeURIComponent(getManifestUrl()), '_blank');
+});
+
+document.getElementById('copyBtn').addEventListener('click', () => {
+  navigator.clipboard.writeText(getManifestUrl()).then(() => {
+    const msg = document.getElementById('statusMsg');
+    msg.textContent = 'Copied to clipboard!';
+    setTimeout(() => msg.textContent = '', 2000);
+  });
+});
+
+loadSports();
+updateUrl();
+</script>
+</body>
+</html>
   `);
 });
 
 // -------------------------------------------------------------
-// 1. STANDALONE ADD-ON (Catalog + Meta + Streams + Subtitles)
+// Manifest Handler (Supports standard & configured /:config routes)
 // -------------------------------------------------------------
+app.get(['/manifest.json', '/:config/manifest.json'], async (req, res) => {
+  const config = req.params.config;
+  const upstreamManifestUrl = config 
+    ? `${HIGHFLY_BASE}/${config}/manifest.json`
+    : `${HIGHFLY_BASE}/manifest.json`;
 
-app.get('/manifest.json', async (req, res) => {
   try {
-    const response = await axios.get(`${HIGHFLY_BASE}/manifest.json`);
+    const response = await axios.get(upstreamManifestUrl);
     const manifest = response.data;
     
     manifest.id = 'community.sports.live_ai_subtitles';
-    manifest.name = 'Live Sports (AI Subtitles)';
-    manifest.description = 'Live sports matches with continuous real-time AI commentary subtitles and live translation.';
+    manifest.name = 'Sports Streams (Live Subtitles)';
+    manifest.description = 'Live sports streams with real-time AI commentary subtitles & translation.';
     manifest.logo = 'https://cdn-icons-png.flaticon.com/512/860/860330.png';
     
-    manifest.catalogs = [
-      {
-        type: 'sport',
-        id: 'sports_live',
-        name: 'Live Sports (AI Subtitles)',
-        extra: [{ name: 'skip', isRequired: false }]
-      }
-    ];
+    // Enable Configure button in Stremio app UI
+    manifest.behaviorHints = {
+      configurable: true,
+      configurationRequired: false
+    };
 
     manifest.resources = [
       { name: 'catalog', types: ['sport'] },
@@ -123,12 +507,20 @@ app.get('/manifest.json', async (req, res) => {
   }
 });
 
-// Catalog Proxy
-app.get('/catalog/:type/:id/:extra?.json', async (req, res) => {
-  const { type, id, extra } = req.params;
-  const upstreamUrl = extra 
-    ? `${HIGHFLY_BASE}/catalog/${type}/${id}/${extra}.json`
-    : `${HIGHFLY_BASE}/catalog/${type}/${id}.json`;
+// Catalog Proxy (With and without config)
+app.get(['/catalog/:type/:id/:extra?.json', '/:config/catalog/:type/:id/:extra?.json'], async (req, res) => {
+  const { config, type, id, extra } = req.params;
+  let upstreamUrl;
+
+  if (config) {
+    upstreamUrl = extra 
+      ? `${HIGHFLY_BASE}/${config}/catalog/${type}/${id}/${extra}.json`
+      : `${HIGHFLY_BASE}/${config}/catalog/${type}/${id}.json`;
+  } else {
+    upstreamUrl = extra 
+      ? `${HIGHFLY_BASE}/catalog/${type}/${id}/${extra}.json`
+      : `${HIGHFLY_BASE}/catalog/${type}/${id}.json`;
+  }
 
   try {
     const response = await axios.get(upstreamUrl);
@@ -140,24 +532,30 @@ app.get('/catalog/:type/:id/:extra?.json', async (req, res) => {
 });
 
 // Meta Proxy
-app.get('/meta/:type/:id.json', async (req, res) => {
-  const { type, id } = req.params;
+app.get(['/meta/:type/:id.json', '/:config/meta/:type/:id.json'], async (req, res) => {
+  const { config, type, id } = req.params;
+  const upstreamUrl = config 
+    ? `${HIGHFLY_BASE}/${config}/meta/${type}/${id}.json`
+    : `${HIGHFLY_BASE}/meta/${type}/${id}.json`;
+
   try {
-    const response = await axios.get(`${HIGHFLY_BASE}/meta/${type}/${id}.json`);
+    const response = await axios.get(upstreamUrl);
     res.json(response.data);
   } catch (error) {
-    console.error(`[Addon] Meta error:`, error.message);
     res.status(500).json({ meta: null });
   }
 });
 
-// Stream Proxy with Pre-Warming and Subtitle Tracks
-app.get('/stream/:type/:id.json', async (req, res) => {
-  const { type, id } = req.params;
+// Stream Proxy with Pre-Warming & Multilingual Live Subtitles
+app.get(['/stream/:type/:id.json', '/:config/stream/:type/:id.json'], async (req, res) => {
+  const { config, type, id } = req.params;
   const host = getHostUrl(req);
+  const upstreamUrl = config 
+    ? `${HIGHFLY_BASE}/${config}/stream/${type}/${id}.json`
+    : `${HIGHFLY_BASE}/stream/${type}/${id}.json`;
 
   try {
-    const response = await axios.get(`${HIGHFLY_BASE}/stream/${type}/${id}.json`);
+    const response = await axios.get(upstreamUrl);
     const data = response.data;
 
     if (data && data.streams && Array.isArray(data.streams)) {
@@ -166,7 +564,6 @@ app.get('/stream/:type/:id.json', async (req, res) => {
           const streamHash = crypto.createHash('md5').update(stream.url).digest('hex').substring(0, 10);
           const encodedStreamUrl = encodeURIComponent(Buffer.from(stream.url).toString('base64'));
           
-          // Pre-warm the audio transcription session immediately
           if (idx === 0) {
             getOrCreateSession(stream.url, streamHash, GROQ_API_KEY);
           }
@@ -175,7 +572,7 @@ app.get('/stream/:type/:id.json', async (req, res) => {
 
           return {
             ...stream,
-            title: `🎙️ ${stream.title || 'Live Stream'} [AI Subtitles & Translations]`,
+            title: `🎙️ ${stream.title || 'Live Stream'} [AI Subtitles]`,
             subtitles: subtitleTracks
           };
         }
@@ -190,13 +587,16 @@ app.get('/stream/:type/:id.json', async (req, res) => {
   }
 });
 
-// Standalone Subtitles Resource Endpoint
-app.get('/subtitles/:type/:id/:extra?.json', async (req, res) => {
-  const { type, id } = req.params;
+// Subtitles Resource Endpoint
+app.get(['/subtitles/:type/:id/:extra?.json', '/:config/subtitles/:type/:id/:extra?.json'], async (req, res) => {
+  const { config, type, id } = req.params;
   const host = getHostUrl(req);
+  const upstreamUrl = config 
+    ? `${HIGHFLY_BASE}/${config}/stream/${type}/${id}.json`
+    : `${HIGHFLY_BASE}/stream/${type}/${id}.json`;
 
   try {
-    const streamRes = await axios.get(`${HIGHFLY_BASE}/stream/${type}/${id}.json`);
+    const streamRes = await axios.get(upstreamUrl);
     const streams = streamRes.data?.streams || [];
     
     let subtitles = [];
@@ -216,9 +616,8 @@ app.get('/subtitles/:type/:id/:extra?.json', async (req, res) => {
 });
 
 // -------------------------------------------------------------
-// 2. CONTINUOUS STREAMING WEBVTT ENDPOINT
+// Continuous Live Streaming WebVTT Endpoint
 // -------------------------------------------------------------
-
 app.get('/subtitles/:encodedUrl/:lang/live.vtt', (req, res) => {
   const { encodedUrl, lang } = req.params;
   let rawUrl;
@@ -231,11 +630,9 @@ app.get('/subtitles/:encodedUrl/:lang/live.vtt', (req, res) => {
   const streamId = crypto.createHash('md5').update(rawUrl).digest('hex').substring(0, 10);
   const session = getOrCreateSession(rawUrl, streamId, GROQ_API_KEY);
 
-  // Attach client as an active streaming listener to continuously receive live cues & translation
   session.attachListener(res, lang || 'eng');
 });
 
-// Backward-compatible route without lang parameter (defaults to English)
 app.get('/subtitles/:encodedUrl/live.vtt', (req, res) => {
   const { encodedUrl } = req.params;
   let rawUrl;
@@ -252,5 +649,5 @@ app.get('/subtitles/:encodedUrl/live.vtt', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`\n🚀 Stremio Live Subtitles & Translation Addon running on port ${PORT}`);
+  console.log(`\n🚀 Stremio Sports Streams + AI Subtitles running on port ${PORT}`);
 });
