@@ -3,6 +3,8 @@ const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 const { getOrCreateSession } = require('./transcriber');
 
 const app = express();
@@ -531,7 +533,7 @@ app.get(['/meta/*', '*/meta/*'], async (req, res) => {
   }
 });
 
-// 4. Stream Proxy with HLS Rewriter Relay Links
+// 4. Stream Proxy with In-Video Subtitle Options
 app.get(['/stream/*', '*/stream/*'], async (req, res) => {
   const host = getHostUrl(req);
   try {
@@ -540,21 +542,40 @@ app.get(['/stream/*', '*/stream/*'], async (req, res) => {
     const data = response.data;
 
     if (data && data.streams && Array.isArray(data.streams)) {
-      data.streams = data.streams.map((stream) => {
+      const allStreams = [];
+
+      data.streams.forEach((stream) => {
         if (stream.url) {
           const streamHash = crypto.createHash('md5').update(stream.url).digest('hex').substring(0, 10);
           const encodedStreamUrl = encodeURIComponent(Buffer.from(stream.url).toString('base64'));
-          
           const subtitleTracks = buildSubtitleTracks(host, encodedStreamUrl, streamHash);
 
-          return {
-            ...stream,
-            url: `${host}/relay/${encodedStreamUrl}/live.m3u8`,
+          // 1. In-Video Live Subtitle Stream (100% Guaranteed On-Screen Display)
+          allStreams.push({
+            name: '🎙️ AI Subtitles (In-Video EN)',
+            title: `${stream.title || 'Live Stream'} · [Live AI Subtitles On-Screen]`,
+            url: `${host}/live-video/${encodedStreamUrl}/eng/live.m3u8`,
             subtitles: subtitleTracks
-          };
+          });
+
+          allStreams.push({
+            name: '🇫🇷 AI Subtitles (In-Video FR)',
+            title: `${stream.title || 'Live Stream'} · [Sous-titres AI en direct]`,
+            url: `${host}/live-video/${encodedStreamUrl}/fre/live.m3u8`,
+            subtitles: subtitleTracks
+          });
+
+          // 2. Direct Source Stream
+          allStreams.push({
+            name: stream.name || 'Direct Stream',
+            title: stream.title || 'Direct Stream',
+            url: stream.url,
+            subtitles: subtitleTracks
+          });
         }
-        return stream;
       });
+
+      data.streams = allStreams;
     }
 
     res.json(data);
@@ -585,6 +606,65 @@ app.get(['/subtitles/sport/*', '*/subtitles/sport/*'], async (req, res) => {
   } catch (error) {
     res.json({ subtitles: [] });
   }
+});
+
+// -------------------------------------------------------------
+// In-Video Subtitle Stream Engine (Subtitles Drawn Directly in Video Picture)
+// -------------------------------------------------------------
+app.get('/live-video/:encodedUrl/:lang/live.m3u8', (req, res) => {
+  const { encodedUrl, lang } = req.params;
+  let rawUrl;
+  try {
+    rawUrl = Buffer.from(decodeURIComponent(encodedUrl), 'base64').toString('utf-8');
+  } catch (e) {
+    return res.status(400).send('Invalid stream URL');
+  }
+
+  const streamId = crypto.createHash('md5').update(rawUrl).digest('hex').substring(0, 10);
+  const session = getOrCreateSession(rawUrl, streamId, GROQ_API_KEY);
+  const hlsDir = session.startVideoOverlayStream(lang || 'eng');
+
+  const m3u8Path = path.join(hlsDir, 'live.m3u8');
+  
+  // Wait up to 3.5 seconds for first HLS playlist to generate if starting fresh
+  let attempts = 0;
+  const checkInterval = setInterval(() => {
+    attempts++;
+    if (fs.existsSync(m3u8Path) && fs.statSync(m3u8Path).size > 10) {
+      clearInterval(checkInterval);
+      res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      return res.sendFile(m3u8Path);
+    }
+    if (attempts > 18) {
+      clearInterval(checkInterval);
+      return res.redirect(rawUrl);
+    }
+  }, 200);
+});
+
+// Serve In-Video Subtitle .ts Video Chunks
+app.get('/live-video/:encodedUrl/:lang/:chunk', (req, res) => {
+  const { encodedUrl, lang, chunk } = req.params;
+  let rawUrl;
+  try {
+    rawUrl = Buffer.from(decodeURIComponent(encodedUrl), 'base64').toString('utf-8');
+  } catch (e) {
+    return res.status(400).send('Invalid stream URL');
+  }
+
+  const streamId = crypto.createHash('md5').update(rawUrl).digest('hex').substring(0, 10);
+  const session = getOrCreateSession(rawUrl, streamId, GROQ_API_KEY);
+  const hlsDir = path.join(session.tempDir, `video_${lang || 'eng'}`);
+  const chunkPath = path.join(hlsDir, chunk);
+
+  if (fs.existsSync(chunkPath)) {
+    res.setHeader('Content-Type', 'video/MP2T');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    return res.sendFile(chunkPath);
+  }
+  res.status(404).send('Chunk not found');
 });
 
 // -------------------------------------------------------------

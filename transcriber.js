@@ -16,10 +16,21 @@ class StreamSession {
     this.cues = []; // { segId: number, text: { [lang]: string }, createdAt: number }
     this.segCounter = 0;
     this.sseListeners = new Set();
+    this.overlayProcs = {};
     this.lastAccessTime = Date.now();
     this.isAlive = true;
     this.tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `sub_${streamId}_`));
     this.ffmpegProc = null;
+
+    this.subtitleFiles = {
+      eng: path.join(this.tempDir, 'sub_eng.txt'),
+      fre: path.join(this.tempDir, 'sub_fre.txt'),
+      orig: path.join(this.tempDir, 'sub_orig.txt')
+    };
+
+    fs.writeFileSync(this.subtitleFiles.eng, ' ', 'utf-8');
+    fs.writeFileSync(this.subtitleFiles.fre, ' ', 'utf-8');
+    fs.writeFileSync(this.subtitleFiles.orig, ' ', 'utf-8');
 
     this.startAudioCapture();
   }
@@ -140,6 +151,22 @@ class StreamSession {
               // Keep last 40 cues in memory
               if (this.cues.length > 40) this.cues.shift();
 
+              // Write current subtitle line to disk for in-video overlay
+              try {
+                fs.writeFileSync(this.subtitleFiles.eng, english || ' ', 'utf-8');
+                fs.writeFileSync(this.subtitleFiles.fre, french || ' ', 'utf-8');
+                fs.writeFileSync(this.subtitleFiles.orig, originalText || ' ', 'utf-8');
+
+                // Clear after 4 seconds
+                setTimeout(() => {
+                  try {
+                    fs.writeFileSync(this.subtitleFiles.eng, ' ', 'utf-8');
+                    fs.writeFileSync(this.subtitleFiles.fre, ' ', 'utf-8');
+                    fs.writeFileSync(this.subtitleFiles.orig, ' ', 'utf-8');
+                  } catch (_) {}
+                }, 4000);
+              } catch (_) {}
+
               console.log(`[Transcriber] [${this.streamId}] (Seg ${this.segCounter}) "${originalText}" -> EN: "${english}"`);
 
               // Broadcast live to all connected SSE browser overlays
@@ -163,6 +190,44 @@ class StreamSession {
     } finally {
       this.isProcessing = false;
     }
+  }
+
+  // Start FFmpeg In-Video Subtitle Overlay Stream
+  startVideoOverlayStream(lang = 'eng') {
+    this.touch();
+    const hlsDir = path.join(this.tempDir, `video_${lang}`);
+    if (!fs.existsSync(hlsDir)) fs.mkdirSync(hlsDir, { recursive: true });
+
+    if (this.overlayProcs && this.overlayProcs[lang]) {
+      return hlsDir;
+    }
+
+    const subFile = this.subtitleFiles[lang] || this.subtitleFiles.eng;
+    const m3u8Output = path.join(hlsDir, 'live.m3u8');
+    
+    // Draw text with black semi-transparent box at the bottom of the video frame
+    const args = [
+      '-reconnect', '1',
+      '-reconnect_streamed', '1',
+      '-reconnect_delay_max', '5',
+      '-i', this.streamUrl,
+      '-vf', `drawtext=textfile='${subFile}':reload=1:fontcolor=white:fontsize=26:box=1:boxcolor=black@0.65:boxborderw=6:x=(w-text_w)/2:y=h-text_h-35`,
+      '-c:v', 'libx264',
+      '-preset', 'ultrafast',
+      '-tune', 'zerolatency',
+      '-c:a', 'copy',
+      '-f', 'hls',
+      '-hls_time', '2',
+      '-hls_list_size', '4',
+      '-hls_flags', 'delete_segments',
+      m3u8Output
+    ];
+
+    console.log(`[Transcriber] Launching In-Video Subtitle Transcoder for ${this.streamId} (${lang})`);
+    const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'ignore'] });
+    this.overlayProcs[lang] = proc;
+
+    return hlsDir;
   }
 
   async transcribeAudioChunk(audioPath) {
