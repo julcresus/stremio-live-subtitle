@@ -5,7 +5,7 @@ const axios = require('axios');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const { getOrCreateSession } = require('./transcriber');
+const { getOrCreateSession, getActiveSessionKey } = require('./transcriber');
 
 const app = express();
 const PORT = process.env.PORT || 7000;
@@ -828,6 +828,28 @@ app.get('/hls/:encodedUrl/seg_:segId_:lang.vtt', (req, res) => {
   res.send(vtt);
 });
 
+// WebVTT Subtitles Endpoint (Direct standalone file)
+app.get(['/subtitles/:encodedUrl/:lang/live.vtt', '/subtitles/:encodedUrl/live.vtt'], (req, res) => {
+  const { encodedUrl, lang } = req.params;
+  let rawUrl;
+  try {
+    const decoded = decodeURIComponent(encodedUrl);
+    rawUrl = Buffer.from(decoded, 'base64').toString('utf-8');
+  } catch (e) {
+    return res.status(400).send('Invalid stream URL encoding');
+  }
+
+  const streamId = crypto.createHash('md5').update(rawUrl).digest('hex').substring(0, 10);
+  const session = getOrCreateSession(rawUrl, streamId, GROQ_API_KEY);
+
+  const vttContent = session.getWebVTT(lang || 'eng');
+
+  res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.send(vttContent);
+});
+
 // -------------------------------------------------------------
 // Real-time Live Subtitle Web Overlay & SSE Feed
 // -------------------------------------------------------------
@@ -996,8 +1018,17 @@ function renderAll() {
   subsList.scrollTop = subsList.scrollHeight;
 }
 
-if (encodedUrl) {
-  const es = new EventSource('/events/' + encodeURIComponent(encodedUrl));
+// API to query current active stream
+app.get('/api/active-stream', (req, res) => {
+  const activeKey = getActiveSessionKey();
+  res.json({ streamKey: activeKey });
+});
+
+let currentStreamKey = "${encodedUrl}";
+
+function connectStream(key) {
+  if (!key) return;
+  const es = new EventSource('/events/' + encodeURIComponent(key));
   es.onmessage = (e) => {
     try {
       const data = JSON.parse(e.data);
@@ -1009,6 +1040,24 @@ if (encodedUrl) {
       }
     } catch(err) {}
   };
+}
+
+if (currentStreamKey) {
+  connectStream(currentStreamKey);
+} else {
+  // Auto-discover active stream
+  async function pollActive() {
+    try {
+      const res = await fetch('/api/active-stream');
+      const data = await res.json();
+      if (data.streamKey && data.streamKey !== currentStreamKey) {
+        currentStreamKey = data.streamKey;
+        connectStream(currentStreamKey);
+      }
+    } catch (_) {}
+  }
+  pollActive();
+  setInterval(pollActive, 3000);
 }
 </script>
 </body>

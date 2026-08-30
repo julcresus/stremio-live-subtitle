@@ -426,6 +426,14 @@ setInterval(() => {
   }
 }, 10000);
 
+function getActiveSessionKey() {
+  const active = Array.from(sessions.keys());
+  if (active.length === 0) return null;
+  const session = sessions.get(active[0]);
+  return encodeURIComponent(Buffer.from(session.streamUrl).toString('base64'));
+}
+
 module.exports = {
-  getOrCreateSession
+  getOrCreateSession,
+  getActiveSessionKey
 };
