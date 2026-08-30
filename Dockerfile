@@ -1,7 +1,7 @@
 FROM node:20-alpine
 
-# Install FFmpeg and required media libraries
-RUN apk add --no-cache ffmpeg
+# Install FFmpeg, fonts, and required media libraries
+RUN apk add --no-cache ffmpeg ttf-dejavu fontconfig
 
 WORKDIR /app
 

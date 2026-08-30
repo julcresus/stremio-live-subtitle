@@ -203,15 +203,20 @@ class StreamSession {
     }
 
     const subFile = this.subtitleFiles[lang] || this.subtitleFiles.eng;
+    const escapedSubFile = subFile.replace(/\\/g, '/').replace(/:/g, '\\:');
     const m3u8Output = path.join(hlsDir, 'live.m3u8');
     
-    // Draw text with black semi-transparent box at the bottom of the video frame
+    // Draw text with font styling and black background box at the bottom of the video frame
+    const fontOption = fs.existsSync('/usr/share/fonts/ttf-dejavu/DejaVuSans-Bold.ttf')
+      ? "fontfile='/usr/share/fonts/ttf-dejavu/DejaVuSans-Bold.ttf':"
+      : "";
+
     const args = [
       '-reconnect', '1',
       '-reconnect_streamed', '1',
       '-reconnect_delay_max', '5',
       '-i', this.streamUrl,
-      '-vf', `drawtext=textfile='${subFile}':reload=1:fontcolor=white:fontsize=26:box=1:boxcolor=black@0.65:boxborderw=6:x=(w-text_w)/2:y=h-text_h-35`,
+      '-vf', `drawtext=${fontOption}textfile='${escapedSubFile}':reload=1:fontcolor=white:fontsize=26:box=1:boxcolor=black@0.65:boxborderw=6:x=(w-text_w)/2:y=h-text_h-35`,
       '-c:v', 'libx264',
       '-preset', 'ultrafast',
       '-tune', 'zerolatency',
@@ -224,9 +229,21 @@ class StreamSession {
     ];
 
     console.log(`[Transcriber] Launching In-Video Subtitle Transcoder for ${this.streamId} (${lang})`);
-    const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'ignore'] });
-    this.overlayProcs[lang] = proc;
+    const proc = spawn('ffmpeg', args);
+    
+    proc.stderr.on('data', (data) => {
+      const msg = data.toString();
+      if (msg.includes('Error') || msg.includes('fatal')) {
+        console.error(`[FFmpeg Transcoder ${this.streamId}]`, msg.trim());
+      }
+    });
 
+    proc.on('exit', (code) => {
+      console.log(`[Transcriber] FFmpeg overlay transcoder exited with code ${code} for ${this.streamId}`);
+      delete this.overlayProcs[lang];
+    });
+
+    this.overlayProcs[lang] = proc;
     return hlsDir;
   }
 
@@ -351,6 +368,11 @@ class StreamSession {
     if (this.pollInterval) clearInterval(this.pollInterval);
     if (this.ffmpegProc) {
       try { this.ffmpegProc.kill('SIGKILL'); } catch (_) {}
+    }
+    if (this.overlayProcs) {
+      for (const p of Object.values(this.overlayProcs)) {
+        try { p.kill('SIGKILL'); } catch (_) {}
+      }
     }
     try {
       fs.rmSync(this.tempDir, { recursive: true, force: true });
