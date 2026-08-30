@@ -10,40 +10,8 @@ const PORT = process.env.PORT || 7000;
 const HIGHFLY_BASE = 'https://sports.highfly.dev';
 const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
 
-// Enable CORS for all Stremio web clients and smart TVs
+// Enable CORS for Stremio Web, Desktop and LG Smart TV apps
 app.use(cors());
-
-// Health / Status check
-app.get('/', (req, res) => {
-  const host = getHostUrl(req);
-  res.send(`
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <title>Sports Streams (Live Subtitles)</title>
-        <style>
-          body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f172a; color: #f8fafc; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 20px; }
-          .card { background: #1e293b; padding: 32px; border-radius: 16px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); max-width: 550px; text-align: center; }
-          h1 { color: #38bdf8; margin-bottom: 12px; }
-          p { color: #94a3b8; line-height: 1.6; }
-          .btn { display: inline-block; background: #0284c7; color: #fff; text-decoration: none; padding: 14px 28px; border-radius: 8px; font-weight: 600; font-size: 16px; margin-top: 20px; transition: background 0.2s; }
-          .btn:hover { background: #0369a1; }
-          .status { margin-top: 20px; font-size: 14px; color: ${GROQ_API_KEY ? '#4ade80' : '#f87171'}; }
-          .code { background: #0f172a; padding: 12px; border-radius: 8px; font-family: monospace; font-size: 13px; word-break: break-all; margin-top: 16px; }
-        </style>
-      </head>
-      <body>
-        <div class="card">
-          <h1>Sports Streams + Live Subtitles</h1>
-          <p>Cloud-hosted Stremio Add-on that injects real-time AI live subtitles into sports streams.</p>
-          <a class="btn" href="stremio://${host.replace(/^https?:\/\//, '')}/manifest.json">Install to Stremio</a>
-          <div class="status">● AI Engine Status: ${GROQ_API_KEY ? 'Active (Groq Whisper)' : 'API Key Missing (Set GROQ_API_KEY)'}</div>
-          <div class="code">Manifest URL: ${host}/manifest.json</div>
-        </div>
-      </body>
-    </html>
-  `);
-});
 
 function getHostUrl(req) {
   if (process.env.HOST_URL) return process.env.HOST_URL.replace(/\/$/, '');
@@ -52,25 +20,92 @@ function getHostUrl(req) {
   return `${protocol}://${host}`;
 }
 
-// 1. Manifest
+// -------------------------------------------------------------
+// Landing Page with 1-Click Install Options
+// -------------------------------------------------------------
+app.get('/', (req, res) => {
+  const host = getHostUrl(req);
+  const cleanHost = host.replace(/^https?:\/\//, '');
+
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta charset="utf-8"/>
+        <meta name="viewport" content="width=device-width, initial-scale=1"/>
+        <title>Live Sports AI Subtitles for Stremio</title>
+        <style>
+          body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0b0f19; color: #f8fafc; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 24px; box-sizing: border-box; }
+          .container { background: #161f30; padding: 36px; border-radius: 20px; box-shadow: 0 20px 40px rgba(0,0,0,0.6); max-width: 580px; width: 100%; border: 1px solid #1e293b; text-align: center; }
+          h1 { color: #38bdf8; margin: 0 0 10px; font-size: 26px; }
+          p { color: #94a3b8; line-height: 1.6; font-size: 15px; margin-bottom: 24px; }
+          .addon-card { background: #0f172a; border: 1px solid #334155; border-radius: 12px; padding: 20px; margin-bottom: 20px; text-align: left; }
+          .addon-card h3 { margin: 0 0 6px; color: #e2e8f0; font-size: 17px; }
+          .addon-card p { margin: 0 0 14px; font-size: 13px; color: #64748b; }
+          .btn { display: inline-block; background: #0284c7; color: #fff; text-decoration: none; padding: 12px 22px; border-radius: 8px; font-weight: 600; font-size: 14px; transition: all 0.2s; }
+          .btn:hover { background: #0369a1; transform: translateY(-1px); }
+          .btn-secondary { background: #334155; }
+          .btn-secondary:hover { background: #475569; }
+          .status { margin-top: 16px; font-size: 13px; color: ${GROQ_API_KEY ? '#4ade80' : '#f87171'}; }
+          .url-box { background: #0b0f19; padding: 10px; border-radius: 6px; font-family: monospace; font-size: 12px; color: #94a3b8; word-break: break-all; margin-top: 10px; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <h1>🎙️ Live Sports AI Subtitles</h1>
+          <p>Real-time speech-to-text live commentary subtitles for sports streams on LG TV, Mac, and Mobile.</p>
+          
+          <div class="addon-card">
+            <h3>Option 1: Standalone Live Sports Add-on (Recommended)</h3>
+            <p>Provides a dedicated "Live Sports (AI Subtitles)" catalog with pre-configured live subtitle tracks on every match.</p>
+            <a class="btn" href="stremio://${cleanHost}/manifest.json">Install Standalone Addon</a>
+            <div class="url-box">${host}/manifest.json</div>
+          </div>
+
+          <div class="addon-card">
+            <h3>Option 2: Universal Subtitle Provider Add-on</h3>
+            <p>Injects real-time AI subtitles into any existing sports add-on already installed in your Stremio.</p>
+            <a class="btn btn-secondary" href="stremio://${cleanHost}/subtitles-addon/manifest.json">Install Subtitle Provider</a>
+            <div class="url-box">${host}/subtitles-addon/manifest.json</div>
+          </div>
+
+          <div class="status">● AI Engine: ${GROQ_API_KEY ? 'Active (Groq Whisper Turbo)' : 'API Key Missing (Set GROQ_API_KEY)'}</div>
+        </div>
+      </body>
+    </html>
+  `);
+});
+
+// -------------------------------------------------------------
+// 1. STANDALONE ADD-ON (Catalog + Meta + Streams + Subtitles)
+// -------------------------------------------------------------
+
 app.get('/manifest.json', async (req, res) => {
   try {
     const response = await axios.get(`${HIGHFLY_BASE}/manifest.json`);
     const manifest = response.data;
     
-    // Customize addon branding
-    manifest.id = 'community.sports.live_subtitles';
-    manifest.name = 'Sports Streams (Live Subtitles)';
-    manifest.description = 'Live sports streams with real-time AI commentary subtitles for LG TV and all devices.';
+    manifest.id = 'community.sports.live_ai_subtitles';
+    manifest.name = 'Live Sports (AI Subtitles)';
+    manifest.description = 'Standalone live sports matches with real-time AI commentary subtitles.';
+    manifest.logo = 'https://cdn-icons-png.flaticon.com/512/860/860330.png';
     
-    // Ensure subtitles resource is registered
-    if (!manifest.resources.includes('subtitles')) {
-      manifest.resources.push({
-        name: 'subtitles',
-        types: ['sport'],
-        idPrefixes: ['streamed', 'sf', 'recap', 'leaf']
-      });
-    }
+    // Configure standalone catalog
+    manifest.catalogs = [
+      {
+        type: 'sport',
+        id: 'sports_live',
+        name: 'Live Sports (AI Subtitles)',
+        extra: [{ name: 'skip', isRequired: false }]
+      }
+    ];
+
+    manifest.resources = [
+      { name: 'catalog', types: ['sport'] },
+      { name: 'meta', types: ['sport'], idPrefixes: ['streamed', 'sf', 'recap', 'leaf'] },
+      { name: 'stream', types: ['sport'], idPrefixes: ['streamed', 'sf', 'recap', 'leaf'] },
+      { name: 'subtitles', types: ['sport'], idPrefixes: ['streamed', 'sf', 'recap', 'leaf'] }
+    ];
 
     res.json(manifest);
   } catch (error) {
@@ -79,7 +114,7 @@ app.get('/manifest.json', async (req, res) => {
   }
 });
 
-// 2. Catalog proxy
+// Catalog Proxy
 app.get('/catalog/:type/:id/:extra?.json', async (req, res) => {
   const { type, id, extra } = req.params;
   const upstreamUrl = extra 
@@ -90,12 +125,12 @@ app.get('/catalog/:type/:id/:extra?.json', async (req, res) => {
     const response = await axios.get(upstreamUrl);
     res.json(response.data);
   } catch (error) {
-    console.error(`[Addon] Catalog error (${upstreamUrl}):`, error.message);
+    console.error(`[Addon] Catalog error:`, error.message);
     res.status(500).json({ metas: [] });
   }
 });
 
-// 3. Meta proxy
+// Meta Proxy
 app.get('/meta/:type/:id.json', async (req, res) => {
   const { type, id } = req.params;
   try {
@@ -107,7 +142,7 @@ app.get('/meta/:type/:id.json', async (req, res) => {
   }
 });
 
-// 4. Stream proxy & Subtitle Injection
+// Stream Proxy with Pre-Warming and Subtitle Track Injection
 app.get('/stream/:type/:id.json', async (req, res) => {
   const { type, id } = req.params;
   const host = getHostUrl(req);
@@ -117,22 +152,29 @@ app.get('/stream/:type/:id.json', async (req, res) => {
     const data = response.data;
 
     if (data && data.streams && Array.isArray(data.streams)) {
-      data.streams = data.streams.map((stream) => {
+      data.streams = data.streams.map((stream, idx) => {
         if (stream.url) {
           const streamHash = crypto.createHash('md5').update(stream.url).digest('hex').substring(0, 10);
           const encodedStreamUrl = encodeURIComponent(Buffer.from(stream.url).toString('base64'));
           
-          const subtitleTrack = {
-            id: `live-sub-${streamHash}`,
-            lang: 'eng',
-            url: `${host}/subtitles/${encodedStreamUrl}/live.vtt`,
-            label: '🎙️ Live AI Subtitles'
-          };
+          // Pre-warm the audio transcription session immediately when stream list is requested
+          if (idx === 0) {
+            getOrCreateSession(stream.url, streamHash, GROQ_API_KEY);
+          }
+
+          const subtitleUrl = `${host}/subtitles/${encodedStreamUrl}/live.vtt`;
 
           return {
             ...stream,
-            title: `${stream.title || 'Stream'} [🎙️ Live Captions]`,
-            subtitles: [subtitleTrack]
+            title: `🎙️ ${stream.title || 'Live Stream'} (AI Subtitles)`,
+            subtitles: [
+              {
+                id: `live-sub-${streamHash}`,
+                lang: 'eng',
+                url: subtitleUrl,
+                label: '🎙️ Live AI Subtitles'
+              }
+            ]
           };
         }
         return stream;
@@ -146,19 +188,24 @@ app.get('/stream/:type/:id.json', async (req, res) => {
   }
 });
 
-// 5. Stremio Subtitles Resource Endpoint (Queries subtitles for a match/video)
+// Standalone Subtitles Resource Endpoint
 app.get('/subtitles/:type/:id/:extra?.json', async (req, res) => {
   const { type, id } = req.params;
   const host = getHostUrl(req);
 
   try {
-    // Fetch stream URLs for this match to link the live subtitle track
     const streamRes = await axios.get(`${HIGHFLY_BASE}/stream/${type}/${id}.json`);
     const streams = streamRes.data?.streams || [];
     
     const subtitles = [];
     if (streams.length > 0 && streams[0].url) {
-      const encodedStreamUrl = encodeURIComponent(Buffer.from(streams[0].url).toString('base64'));
+      const streamUrl = streams[0].url;
+      const streamHash = crypto.createHash('md5').update(streamUrl).digest('hex').substring(0, 10);
+      const encodedStreamUrl = encodeURIComponent(Buffer.from(streamUrl).toString('base64'));
+      
+      // Warm session
+      getOrCreateSession(streamUrl, streamHash, GROQ_API_KEY);
+
       subtitles.push({
         id: `live-ai-${id}`,
         url: `${host}/subtitles/${encodedStreamUrl}/live.vtt`,
@@ -169,12 +216,68 @@ app.get('/subtitles/:type/:id/:extra?.json', async (req, res) => {
 
     res.json({ subtitles });
   } catch (error) {
-    console.error(`[Addon] Subtitles resource error:`, error.message);
+    console.error(`[Addon] Subtitles error:`, error.message);
     res.json({ subtitles: [] });
   }
 });
 
-// 6. Dynamic WebVTT Live Subtitle Endpoint
+// -------------------------------------------------------------
+// 2. UNIVERSAL SUBTITLES-ONLY ADD-ON
+// -------------------------------------------------------------
+
+app.get('/subtitles-addon/manifest.json', (req, res) => {
+  res.json({
+    id: 'org.stremio.live.sports.subtitles',
+    version: '1.0.0',
+    name: 'Live Sports AI Subtitles Provider',
+    description: 'Provides real-time AI commentary subtitles for live sports channels in Stremio.',
+    logo: 'https://cdn-icons-png.flaticon.com/512/860/860330.png',
+    resources: [
+      {
+        name: 'subtitles',
+        types: ['sport', 'tv', 'channel'],
+        idPrefixes: ['streamed', 'sf', 'recap', 'leaf']
+      }
+    ],
+    types: ['sport', 'tv', 'channel'],
+    catalogs: []
+  });
+});
+
+app.get('/subtitles-addon/subtitles/:type/:id/:extra?.json', async (req, res) => {
+  const { type, id } = req.params;
+  const host = getHostUrl(req);
+
+  try {
+    const streamRes = await axios.get(`${HIGHFLY_BASE}/stream/${type}/${id}.json`);
+    const streams = streamRes.data?.streams || [];
+    
+    const subtitles = [];
+    if (streams.length > 0 && streams[0].url) {
+      const streamUrl = streams[0].url;
+      const streamHash = crypto.createHash('md5').update(streamUrl).digest('hex').substring(0, 10);
+      const encodedStreamUrl = encodeURIComponent(Buffer.from(streamUrl).toString('base64'));
+      
+      getOrCreateSession(streamUrl, streamHash, GROQ_API_KEY);
+
+      subtitles.push({
+        id: `live-sub-${streamHash}`,
+        url: `${host}/subtitles/${encodedStreamUrl}/live.vtt`,
+        lang: 'eng',
+        label: '🎙️ Live AI Subtitles'
+      });
+    }
+
+    res.json({ subtitles });
+  } catch (error) {
+    res.json({ subtitles: [] });
+  }
+});
+
+// -------------------------------------------------------------
+// 3. DYNAMIC WEBVTT SERVING
+// -------------------------------------------------------------
+
 app.get('/subtitles/:encodedUrl/live.vtt', (req, res) => {
   const { encodedUrl } = req.params;
   let rawUrl;
@@ -184,7 +287,7 @@ app.get('/subtitles/:encodedUrl/live.vtt', (req, res) => {
     return res.status(400).send('Invalid stream URL encoding');
   }
 
-  const streamId = crypto.createHash('md5').update(rawUrl).digest('hex').substring(0, 12);
+  const streamId = crypto.createHash('md5').update(rawUrl).digest('hex').substring(0, 10);
   const session = getOrCreateSession(rawUrl, streamId, GROQ_API_KEY);
 
   const vttContent = session.getWebVTT();
@@ -196,6 +299,5 @@ app.get('/subtitles/:encodedUrl/live.vtt', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`\n🚀 Stremio Live Subtitle Proxy listening on port ${PORT}`);
-  console.log(`👉 Addon URL: http://localhost:${PORT}/manifest.json\n`);
+  console.log(`\n🚀 Stremio Live Subtitles Addon running on port ${PORT}`);
 });
