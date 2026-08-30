@@ -61,9 +61,12 @@ class StreamSession {
   }
 
   async processNextChunks() {
-    if (!this.isAlive) return;
+    if (!this.isAlive || this.isProcessing) return;
+    this.isProcessing = true;
 
     try {
+      if (!fs.existsSync(this.tempDir)) return;
+
       const files = fs.readdirSync(this.tempDir)
         .filter(f => f.startsWith('chunk_') && f.endsWith('.wav'))
         .sort();
@@ -73,6 +76,8 @@ class StreamSession {
       for (let i = 0; i < files.length - 1; i++) {
         const file = files[i];
         const filePath = path.join(this.tempDir, file);
+
+        if (!fs.existsSync(filePath)) continue;
 
         try {
           const stats = fs.statSync(filePath);
@@ -112,13 +117,17 @@ class StreamSession {
             }
           }
         } catch (e) {
-          console.error(`[Transcriber] Error processing chunk ${file}:`, e.message);
+          // Ignore individual chunk read glitches
         } finally {
-          try { fs.unlinkSync(filePath); } catch (_) {}
+          try { 
+            if (fs.existsSync(filePath)) fs.unlinkSync(filePath); 
+          } catch (_) {}
         }
       }
     } catch (err) {
-      console.error(`[Transcriber] Poll error:`, err.message);
+      // Ignore directory read glitches
+    } finally {
+      this.isProcessing = false;
     }
   }
 
