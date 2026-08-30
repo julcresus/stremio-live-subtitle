@@ -609,70 +609,12 @@ app.get(['/subtitles/sport/*', '*/subtitles/sport/*'], async (req, res) => {
 });
 
 // -------------------------------------------------------------
-// In-Video Subtitle Stream Engine (Subtitles Drawn Directly in Video Picture)
+// In-Video Subtitle Stream Engine (Delayed Chunk Proxy)
 // -------------------------------------------------------------
-app.get('/live-video/:encodedUrl/:lang/live.m3u8', (req, res) => {
+const { processChunkAndBurnSubtitles } = require('./transcriber');
+
+app.get('/live-video/:encodedUrl/:lang/live.m3u8', async (req, res) => {
   const { encodedUrl, lang } = req.params;
-  let rawUrl;
-  try {
-    rawUrl = Buffer.from(decodeURIComponent(encodedUrl), 'base64').toString('utf-8');
-  } catch (e) {
-    return res.status(400).send('Invalid stream URL');
-  }
-
-  const streamId = crypto.createHash('md5').update(rawUrl).digest('hex').substring(0, 10);
-  const session = getOrCreateSession(rawUrl, streamId, GROQ_API_KEY);
-  const hlsDir = session.startVideoOverlayStream(lang || 'eng');
-
-  const m3u8Path = path.join(hlsDir, 'live.m3u8');
-  
-  // Wait up to 3.5 seconds for first HLS playlist to generate if starting fresh
-  let attempts = 0;
-  const checkInterval = setInterval(() => {
-    attempts++;
-    if (fs.existsSync(m3u8Path) && fs.statSync(m3u8Path).size > 10) {
-      clearInterval(checkInterval);
-      res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-      return res.sendFile(m3u8Path);
-    }
-    if (attempts > 18) {
-      clearInterval(checkInterval);
-      return res.redirect(rawUrl);
-    }
-  }, 200);
-});
-
-// Serve In-Video Subtitle .ts Video Chunks
-app.get('/live-video/:encodedUrl/:lang/:chunk', (req, res) => {
-  const { encodedUrl, lang, chunk } = req.params;
-  let rawUrl;
-  try {
-    rawUrl = Buffer.from(decodeURIComponent(encodedUrl), 'base64').toString('utf-8');
-  } catch (e) {
-    return res.status(400).send('Invalid stream URL');
-  }
-
-  const streamId = crypto.createHash('md5').update(rawUrl).digest('hex').substring(0, 10);
-  const session = getOrCreateSession(rawUrl, streamId, GROQ_API_KEY);
-  const hlsDir = path.join(session.tempDir, `video_${lang || 'eng'}`);
-  const chunkPath = path.join(hlsDir, chunk);
-
-  if (fs.existsSync(chunkPath)) {
-    res.setHeader('Content-Type', 'video/MP2T');
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    return res.sendFile(chunkPath);
-  }
-  res.status(404).send('Chunk not found');
-});
-
-// -------------------------------------------------------------
-// HLS Rewriter Relay Engine (Injects Live Subtitles directly into HLS stream)
-// -------------------------------------------------------------
-
-app.get('/relay/:encodedUrl/live.m3u8', async (req, res) => {
-  const { encodedUrl } = req.params;
   const host = getHostUrl(req);
   let rawUrl;
   try {
@@ -680,9 +622,6 @@ app.get('/relay/:encodedUrl/live.m3u8', async (req, res) => {
   } catch (e) {
     return res.status(400).send('Invalid stream URL');
   }
-
-  const streamId = crypto.createHash('md5').update(rawUrl).digest('hex').substring(0, 10);
-  getOrCreateSession(rawUrl, streamId, GROQ_API_KEY);
 
   try {
     const upstreamRes = await axios.get(rawUrl, {
@@ -696,26 +635,15 @@ app.get('/relay/:encodedUrl/live.m3u8', async (req, res) => {
     let content = upstreamRes.data;
     if (typeof content !== 'string') content = content.toString();
 
-    // Check if upstream is a Master Playlist (contains #EXT-X-STREAM-INF)
+    // Check if upstream is a Master Playlist
     if (content.includes('#EXT-X-STREAM-INF')) {
       const baseUrl = rawUrl.substring(0, rawUrl.lastIndexOf('/') + 1);
       
-      // Inject Subtitle tracks at the top
-      let subtitleTags = `\n#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="🎙️ English AI",DEFAULT=YES,AUTOSELECT=YES,FORCED=NO,LANGUAGE="eng",URI="${host}/hls/${encodedUrl}/sub_eng.m3u8"\n`;
-      subtitleTags += `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="🇫🇷 Français AI",DEFAULT=NO,AUTOSELECT=NO,FORCED=NO,LANGUAGE="fre",URI="${host}/hls/${encodedUrl}/sub_fre.m3u8"\n`;
-      subtitleTags += `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="🇪🇸 Español AI",DEFAULT=NO,AUTOSELECT=NO,FORCED=NO,LANGUAGE="spa",URI="${host}/hls/${encodedUrl}/sub_spa.m3u8"\n`;
-      subtitleTags += `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="🇩🇪 Deutsch AI",DEFAULT=NO,AUTOSELECT=NO,FORCED=NO,LANGUAGE="ger",URI="${host}/hls/${encodedUrl}/sub_ger.m3u8"\n`;
-      subtitleTags += `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="🇮🇹 Italiano AI",DEFAULT=NO,AUTOSELECT=NO,FORCED=NO,LANGUAGE="ita",URI="${host}/hls/${encodedUrl}/sub_ita.m3u8"\n`;
-
-      let rewritten = content.replace(/(#EXTM3U[^\n]*\n)/i, `$1${subtitleTags}`);
-
-      // Add SUBTITLES="subs" to stream inf lines and resolve relative URLs to absolute CDN URLs
-      rewritten = rewritten.split('\n').map(line => {
-        if (line.startsWith('#EXT-X-STREAM-INF') && !line.includes('SUBTITLES=')) {
-          return line + ',SUBTITLES="subs"';
-        }
+      let rewritten = content.split('\n').map(line => {
         if (line.trim() && !line.startsWith('#')) {
-          return new URL(line.trim(), baseUrl).href;
+          const targetUrl = new URL(line.trim(), baseUrl).href;
+          const targetEncoded = encodeURIComponent(Buffer.from(targetUrl).toString('base64'));
+          return `${host}/live-video/${targetEncoded}/${lang}/live.m3u8`;
         }
         return line;
       }).join('\n');
@@ -725,344 +653,54 @@ app.get('/relay/:encodedUrl/live.m3u8', async (req, res) => {
       res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
       return res.send(rewritten);
     } else {
-      // If it's already a media playlist with .ts chunks, wrap it in a clean master playlist
-      let master = `#EXTM3U\n#EXT-X-VERSION:3\n`;
-      master += `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="🎙️ English AI",DEFAULT=YES,AUTOSELECT=YES,FORCED=NO,LANGUAGE="eng",URI="${host}/hls/${encodedUrl}/sub_eng.m3u8"\n`;
-      master += `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="🇫🇷 Français AI",DEFAULT=NO,AUTOSELECT=NO,FORCED=NO,LANGUAGE="fre",URI="${host}/hls/${encodedUrl}/sub_fre.m3u8"\n`;
-      master += `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="🇪🇸 Español AI",DEFAULT=NO,AUTOSELECT=NO,FORCED=NO,LANGUAGE="spa",URI="${host}/hls/${encodedUrl}/sub_spa.m3u8"\n`;
-      master += `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="🇩🇪 Deutsch AI",DEFAULT=NO,AUTOSELECT=NO,FORCED=NO,LANGUAGE="ger",URI="${host}/hls/${encodedUrl}/sub_ger.m3u8"\n`;
-      master += `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="🇮🇹 Italiano AI",DEFAULT=NO,AUTOSELECT=NO,FORCED=NO,LANGUAGE="ita",URI="${host}/hls/${encodedUrl}/sub_ita.m3u8"\n`;
-      master += `#EXT-X-STREAM-INF:BANDWIDTH=5000000,SUBTITLES="subs"\n`;
-      master += `${host}/relay/${encodedUrl}/media.m3u8\n`;
+      // It's a media playlist (.ts chunks)
+      const baseUrl = rawUrl.substring(0, rawUrl.lastIndexOf('/') + 1);
+      
+      let rewritten = content.split('\n').map(line => {
+        if (line.trim() && !line.startsWith('#')) {
+          const targetUrl = new URL(line.trim(), baseUrl).href;
+          const targetEncoded = encodeURIComponent(Buffer.from(targetUrl).toString('base64'));
+          // Route each chunk to our proxy
+          return `${host}/chunk/${targetEncoded}/${lang}/segment.ts`;
+        }
+        return line;
+      }).join('\n');
 
       res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-      return res.send(master);
+      return res.send(rewritten);
     }
   } catch (err) {
-    // Fallback: Redirect directly to raw URL
     return res.redirect(rawUrl);
   }
 });
 
-// Relay child media playlist (.ts chunks with absolute CDN URLs)
-app.get('/relay/:encodedUrl/media.m3u8', async (req, res) => {
-  const { encodedUrl } = req.params;
+app.get('/chunk/:encodedUrl/:lang/segment.ts', async (req, res) => {
+  const { encodedUrl, lang } = req.params;
   let rawUrl;
   try {
     rawUrl = Buffer.from(decodeURIComponent(encodedUrl), 'base64').toString('utf-8');
   } catch (e) {
-    return res.status(400).send('Invalid stream URL');
+    return res.status(400).send('Invalid chunk URL');
   }
 
   try {
-    const upstreamRes = await axios.get(rawUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)',
-        'Referer': rawUrl
-      },
-      timeout: 6000
-    });
-
-    let content = upstreamRes.data;
-    if (typeof content !== 'string') content = content.toString();
-
-    const baseUrl = rawUrl.substring(0, rawUrl.lastIndexOf('/') + 1);
-    const rewritten = content.split('\n').map(line => {
-      if (line.trim() && !line.startsWith('#')) {
-        return new URL(line.trim(), baseUrl).href;
-      }
-      return line;
-    }).join('\n');
-
-    res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-    res.send(rewritten);
+    // Process chunk: download -> extract audio -> whisper -> hardcode subtitle -> return
+    const chunkPath = await processChunkAndBurnSubtitles(rawUrl, lang || 'eng', GROQ_API_KEY);
+    
+    if (chunkPath && fs.existsSync(chunkPath)) {
+      res.setHeader('Content-Type', 'video/MP2T');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Cache-Control', 'public, max-age=86400'); // Cache on client edge
+      return res.sendFile(chunkPath);
+    } else {
+      res.redirect(rawUrl);
+    }
   } catch (err) {
+    console.error(`[Chunk Proxy] Error processing ${rawUrl}:`, err.message);
     res.redirect(rawUrl);
   }
-});
-
-// Continuous Rolling HLS Subtitle Playlist (.m3u8)
-app.get('/hls/:encodedUrl/sub_:lang.m3u8', (req, res) => {
-  const { encodedUrl, lang } = req.params;
-  const host = getHostUrl(req);
-  let rawUrl;
-  try {
-    rawUrl = Buffer.from(decodeURIComponent(encodedUrl), 'base64').toString('utf-8');
-  } catch (e) {
-    return res.status(400).send('Invalid stream URL encoding');
-  }
-
-  const streamId = crypto.createHash('md5').update(rawUrl).digest('hex').substring(0, 10);
-  const session = getOrCreateSession(rawUrl, streamId, GROQ_API_KEY);
-
-  const playlist = session.getHlsSubtitlePlaylist(host, encodedUrl, lang || 'eng');
-
-  res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-  res.send(playlist);
-});
-
-// HLS Subtitle Segment Chunk (.vtt)
-app.get('/hls/:encodedUrl/seg_:segId_:lang.vtt', (req, res) => {
-  const { encodedUrl, segId, lang } = req.params;
-  let rawUrl;
-  try {
-    rawUrl = Buffer.from(decodeURIComponent(encodedUrl), 'base64').toString('utf-8');
-  } catch (e) {
-    return res.status(400).send('Invalid stream URL encoding');
-  }
-
-  const streamId = crypto.createHash('md5').update(rawUrl).digest('hex').substring(0, 10);
-  const session = getOrCreateSession(rawUrl, streamId, GROQ_API_KEY);
-
-  const vtt = session.getSegmentVTT(segId, lang || 'eng');
-
-  res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-  res.send(vtt);
-});
-
-// WebVTT Subtitles Endpoint (Direct standalone file)
-app.get(['/subtitles/:encodedUrl/:lang/live.vtt', '/subtitles/:encodedUrl/live.vtt'], (req, res) => {
-  const { encodedUrl, lang } = req.params;
-  let rawUrl;
-  try {
-    const decoded = decodeURIComponent(encodedUrl);
-    rawUrl = Buffer.from(decoded, 'base64').toString('utf-8');
-  } catch (e) {
-    return res.status(400).send('Invalid stream URL encoding');
-  }
-
-  const streamId = crypto.createHash('md5').update(rawUrl).digest('hex').substring(0, 10);
-  const session = getOrCreateSession(rawUrl, streamId, GROQ_API_KEY);
-
-  const vttContent = session.getWebVTT(lang || 'eng');
-
-  res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-  res.send(vttContent);
-});
-
-// -------------------------------------------------------------
-// Real-time Live Subtitle Web Overlay & SSE Feed
-// -------------------------------------------------------------
-
-// SSE Real-time Events
-app.get('/events/:encodedUrl', (req, res) => {
-  const { encodedUrl } = req.params;
-  let rawUrl;
-  try {
-    rawUrl = Buffer.from(decodeURIComponent(encodedUrl), 'base64').toString('utf-8');
-  } catch (e) {
-    return res.status(400).send('Invalid stream URL');
-  }
-
-  const streamId = crypto.createHash('md5').update(rawUrl).digest('hex').substring(0, 10);
-  const session = getOrCreateSession(rawUrl, streamId, GROQ_API_KEY);
-
-  session.attachSseListener(res);
-});
-
-// Live Floating Caption Viewer UI
-app.get(['/live/:encodedUrl', '/live'], (req, res) => {
-  const encodedUrl = req.params.encodedUrl || '';
-  res.send(`
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>🎙️ Live AI Commentary Subtitles</title>
-<style>
-*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-body{
-  background:#090d16;
-  color:#f8fafc;
-  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
-  min-height:100vh;
-  display:flex;
-  flex-direction:column;
-  padding:16px;
-}
-.header{
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  padding-bottom:12px;
-  border-bottom:1px solid #1e293b;
-  flex-wrap:wrap;
-  gap:10px;
-}
-.title{font-size:16px;font-weight:700;color:#38bdf8;display:flex;align-items:center;gap:6px;}
-.badge{background:#1e293b;color:#4ade80;font-size:11px;padding:3px 8px;border-radius:100px;font-weight:600;}
-.controls{display:flex;align-items:center;gap:8px;}
-.lang-btn{
-  background:#1e293b;color:#94a3b8;border:1px solid #334155;border-radius:6px;
-  padding:6px 10px;font-size:12px;cursor:pointer;font-weight:500;transition:all 0.15s;
-}
-.lang-btn.active{background:#0284c7;color:#fff;border-color:#0284c7;}
-.font-btn{background:#1e293b;color:#cbd5e1;border:none;border-radius:6px;padding:6px 10px;font-size:12px;cursor:pointer;}
-.subs-container{
-  flex:1;
-  overflow-y:auto;
-  margin-top:16px;
-  display:flex;
-  flex-direction:column;
-  gap:12px;
-  padding-bottom:30px;
-}
-.cue-card{
-  background:rgba(30,41,59,0.7);
-  backdrop-filter:blur(8px);
-  border-left:4px solid #38bdf8;
-  border-radius:8px;
-  padding:14px 18px;
-  font-size:18px;
-  line-height:1.5;
-  color:#f1f5f9;
-  animation:fadeIn 0.2s ease-out;
-}
-.cue-card.highlight{border-left-color:#4ade80;background:rgba(30,41,59,0.95);font-weight:600;}
-.cue-time{font-size:11px;color:#64748b;margin-bottom:4px;font-family:monospace;}
-@keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
-.placeholder{color:#64748b;font-size:14px;text-align:center;margin-top:40px;}
-</style>
-</head>
-<body>
-<div class="header">
-  <div class="title">
-    <span>🎙️ Live Commentary</span>
-    <span class="badge" id="statusBadge">● LIVE</span>
-  </div>
-  <div class="controls">
-    <button class="lang-btn active" data-lang="eng">🇬🇧 EN</button>
-    <button class="lang-btn" data-lang="fre">🇫🇷 FR</button>
-    <button class="lang-btn" data-lang="spa">🇪🇸 ES</button>
-    <button class="lang-btn" data-lang="orig">🎙️ Orig</button>
-    <button class="font-btn" id="fontDown">A-</button>
-    <button class="font-btn" id="fontUp">A+</button>
-  </div>
-</div>
-
-<div class="subs-container" id="subsList">
-  <div class="placeholder" id="emptyNote">Connecting to live commentary stream...</div>
-</div>
-
-<script>
-let currentLang = 'eng';
-let fontSize = 18;
-const subsList = document.getElementById('subsList');
-const encodedUrl = "${encodedUrl}";
-
-document.querySelectorAll('.lang-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('.lang-btn').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    currentLang = btn.dataset.lang;
-    renderAll();
-  });
-});
-
-document.getElementById('fontUp').addEventListener('click', () => {
-  fontSize = Math.min(32, fontSize + 2);
-  document.querySelectorAll('.cue-card').forEach(c => c.style.fontSize = fontSize + 'px');
-});
-
-document.getElementById('fontDown').addEventListener('click', () => {
-  fontSize = Math.max(12, fontSize - 2);
-  document.querySelectorAll('.cue-card').forEach(c => c.style.fontSize = fontSize + 'px');
-});
-
-let allCues = [];
-
-function addCue(cue) {
-  allCues.push(cue);
-  if (allCues.length > 50) allCues.shift();
-  document.getElementById('emptyNote')?.remove();
-
-  const card = document.createElement('div');
-  card.className = 'cue-card highlight';
-  card.style.fontSize = fontSize + 'px';
-
-  const text = cue.text[currentLang] || cue.text['eng'] || cue.text['orig'] || '';
-  const time = new Date(cue.createdAt).toLocaleTimeString();
-  card.innerHTML = '<div class="cue-time">' + time + '</div><div>' + text + '</div>';
-
-  document.querySelectorAll('.cue-card').forEach(c => c.classList.remove('highlight'));
-  subsList.appendChild(card);
-  subsList.scrollTop = subsList.scrollHeight;
-}
-
-function renderAll() {
-  subsList.innerHTML = '';
-  if (allCues.length === 0) {
-    subsList.innerHTML = '<div class="placeholder">Waiting for next live commentary speech...</div>';
-    return;
-  }
-  allCues.forEach(cue => {
-    const card = document.createElement('div');
-    card.className = 'cue-card';
-    card.style.fontSize = fontSize + 'px';
-    const text = cue.text[currentLang] || cue.text['eng'] || cue.text['orig'] || '';
-    const time = new Date(cue.createdAt).toLocaleTimeString();
-    card.innerHTML = '<div class="cue-time">' + time + '</div><div>' + text + '</div>';
-    subsList.appendChild(card);
-  });
-  subsList.scrollTop = subsList.scrollHeight;
-}
-
-// API to query current active stream
-app.get('/api/active-stream', (req, res) => {
-  const activeKey = getActiveSessionKey();
-  res.json({ streamKey: activeKey });
-});
-
-let currentStreamKey = "${encodedUrl}";
-
-function connectStream(key) {
-  if (!key) return;
-  const es = new EventSource('/events/' + encodeURIComponent(key));
-  es.onmessage = (e) => {
-    try {
-      const data = JSON.parse(e.data);
-      if (data.type === 'history' && Array.isArray(data.cues)) {
-        allCues = data.cues;
-        renderAll();
-      } else if (data.type === 'cue') {
-        addCue(data.cue);
-      }
-    } catch(err) {}
-  };
-}
-
-if (currentStreamKey) {
-  connectStream(currentStreamKey);
-} else {
-  // Auto-discover active stream
-  async function pollActive() {
-    try {
-      const res = await fetch('/api/active-stream');
-      const data = await res.json();
-      if (data.streamKey && data.streamKey !== currentStreamKey) {
-        currentStreamKey = data.streamKey;
-        connectStream(currentStreamKey);
-      }
-    } catch (_) {}
-  }
-  pollActive();
-  setInterval(pollActive, 3000);
-}
-</script>
-</body>
-</html>
-  `);
 });
 
 app.listen(PORT, () => {
