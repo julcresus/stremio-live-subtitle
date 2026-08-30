@@ -14,7 +14,6 @@ class StreamSession {
     this.streamId = streamId;
     this.apiKey = apiKey;
     this.cues = []; // { text: { [lang]: string }, createdAt: number }
-    this.listeners = new Set(); // { res, lang, connectedAt: number }
     this.lastAccessTime = Date.now();
     this.isAlive = true;
     this.tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `sub_${streamId}_`));
@@ -105,12 +104,10 @@ class StreamSession {
               };
 
               this.cues.push(newCue);
-              if (this.cues.length > 50) this.cues.shift();
+              // Keep last 30 cues
+              if (this.cues.length > 30) this.cues.shift();
 
               console.log(`[Transcriber] [${this.streamId}] (Orig): "${originalText}" -> (EN): "${english}"`);
-
-              // Broadcast new cue to all connected Stremio players with synchronized timestamps
-              this.broadcastCue(newCue);
             }
           }
         } catch (e) {
@@ -172,64 +169,29 @@ class StreamSession {
     }
   }
 
-  attachListener(res, lang = 'eng') {
+  getWebVTT(lang = 'eng') {
     this.touch();
-    const connectedAt = Date.now();
+    let vtt = "WEBVTT\n\n";
 
-    // Set headers for live streaming WebVTT
-    res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-    res.setHeader('Connection', 'keep-alive');
-    res.setHeader('Transfer-Encoding', 'chunked');
-
-    // Send WebVTT Header
-    res.write("WEBVTT\n\n");
-
-    // If we have recent cues, send the latest one at timestamp 00:00:00
-    if (this.cues.length > 0) {
-      const latest = this.cues[this.cues.length - 1];
-      const text = latest.text[lang] || latest.text['eng'] || latest.text['orig'] || '';
-      res.write(`00:00:00.000 --> 00:00:04.000\n${text}\n\n`);
-    } else {
-      res.write(`00:00:00.000 --> 00:00:04.000\n[🎙️ Live AI Subtitles Connecting...]\n\n`);
+    if (this.cues.length === 0) {
+      vtt += `00:00:00.000 --> 00:00:05.000\n[🎙️ Live AI Subtitles Active]\n\n`;
+      return vtt;
     }
 
-    const listener = { res, lang, connectedAt };
-    this.listeners.add(listener);
+    // Sequence the accumulated cues starting at 00:00:00.000
+    // Each cue is displayed for 3.5 seconds in order so MPV parses and displays them smoothly
+    let currentSec = 0;
+    for (let i = 0; i < this.cues.length; i++) {
+      const cue = this.cues[i];
+      const startSec = currentSec;
+      const endSec = startSec + 3.8;
+      currentSec = endSec;
 
-    // Heartbeat keep-alive every 4s
-    const keepAlive = setInterval(() => {
-      if (res.writableEnded || res.closed) {
-        clearInterval(keepAlive);
-        this.listeners.delete(listener);
-        return;
-      }
-      res.write(`NOTE heartbeat\n\n`);
-    }, 4000);
-
-    res.on('close', () => {
-      clearInterval(keepAlive);
-      this.listeners.delete(listener);
-    });
-  }
-
-  broadcastCue(cue) {
-    const now = Date.now();
-    for (const listener of this.listeners) {
-      try {
-        if (!listener.res.writableEnded && !listener.res.closed) {
-          const elapsed = (now - listener.connectedAt) / 1000;
-          const startSec = Math.max(0, elapsed);
-          const endSec = startSec + 4.5;
-
-          const text = cue.text[listener.lang] || cue.text['eng'] || cue.text['orig'] || '';
-          listener.res.write(`${formatTime(startSec)} --> ${formatTime(endSec)}\n${text}\n\n`);
-        }
-      } catch (e) {
-        this.listeners.delete(listener);
-      }
+      const text = cue.text[lang] || cue.text['eng'] || cue.text['orig'] || '';
+      vtt += `${formatTime(startSec)} --> ${formatTime(endSec)}\n${text}\n\n`;
     }
+
+    return vtt;
   }
 
   destroy() {
@@ -238,10 +200,6 @@ class StreamSession {
     if (this.ffmpegProc) {
       try { this.ffmpegProc.kill('SIGKILL'); } catch (_) {}
     }
-    for (const listener of this.listeners) {
-      try { listener.res.end(); } catch (_) {}
-    }
-    this.listeners.clear();
     try {
       fs.rmSync(this.tempDir, { recursive: true, force: true });
     } catch (_) {}
@@ -275,11 +233,11 @@ function getOrCreateSession(streamUrl, streamId, apiKey) {
   return session;
 }
 
-// Cleanup inactive sessions
+// Cleanup inactive sessions after 90s
 setInterval(() => {
   const now = Date.now();
   for (const [id, session] of sessions.entries()) {
-    if (session.listeners.size === 0 && (now - session.lastAccessTime > 60000)) {
+    if (now - session.lastAccessTime > 90000) {
       console.log(`[Transcriber] Cleaning up idle session: ${id}`);
       session.destroy();
       sessions.delete(id);

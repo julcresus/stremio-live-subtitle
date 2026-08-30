@@ -617,13 +617,14 @@ app.get(['/subtitles/:type/:id/:extra?.json', '/:config/subtitles/:type/:id/:ext
 });
 
 // -------------------------------------------------------------
-// Continuous Live Streaming WebVTT Endpoint
+// WebVTT Subtitles Endpoint (Delivers instant complete VTT to media players)
 // -------------------------------------------------------------
-app.get('/subtitles/:encodedUrl/:lang/live.vtt', (req, res) => {
+app.get(['/subtitles/:encodedUrl/:lang/live.vtt', '/subtitles/:encodedUrl/live.vtt'], (req, res) => {
   const { encodedUrl, lang } = req.params;
   let rawUrl;
   try {
-    rawUrl = Buffer.from(decodeURIComponent(encodedUrl), 'base64').toString('utf-8');
+    const decoded = decodeURIComponent(encodedUrl);
+    rawUrl = Buffer.from(decoded, 'base64').toString('utf-8');
   } catch (e) {
     return res.status(400).send('Invalid stream URL encoding');
   }
@@ -631,22 +632,12 @@ app.get('/subtitles/:encodedUrl/:lang/live.vtt', (req, res) => {
   const streamId = crypto.createHash('md5').update(rawUrl).digest('hex').substring(0, 10);
   const session = getOrCreateSession(rawUrl, streamId, GROQ_API_KEY);
 
-  session.attachListener(res, lang || 'eng');
-});
+  const vttContent = session.getWebVTT(lang || 'eng');
 
-app.get('/subtitles/:encodedUrl/live.vtt', (req, res) => {
-  const { encodedUrl } = req.params;
-  let rawUrl;
-  try {
-    rawUrl = Buffer.from(decodeURIComponent(encodedUrl), 'base64').toString('utf-8');
-  } catch (e) {
-    return res.status(400).send('Invalid stream URL encoding');
-  }
-
-  const streamId = crypto.createHash('md5').update(rawUrl).digest('hex').substring(0, 10);
-  const session = getOrCreateSession(rawUrl, streamId, GROQ_API_KEY);
-
-  session.attachListener(res, 'eng');
+  res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.send(vttContent);
 });
 
 app.listen(PORT, () => {
