@@ -550,6 +550,7 @@ app.get(['/stream/*', '*/stream/*'], async (req, res) => {
 
           return {
             ...stream,
+            url: `${host}/hls/${encodedStreamUrl}/master.m3u8`,
             subtitles: subtitleTracks
           };
         }
