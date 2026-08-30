@@ -13,12 +13,12 @@ class StreamSession {
     this.streamUrl = streamUrl;
     this.streamId = streamId;
     this.apiKey = apiKey;
-    this.cues = []; // { start: number, end: number, text: string }
+    this.cues = []; // { start: number, end: number, text: { [lang]: string } }
+    this.listeners = new Set(); // Active HTTP response streams { res, lang }
     this.lastAccessTime = Date.now();
     this.startTime = Date.now();
     this.isAlive = true;
     this.tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `sub_${streamId}_`));
-    this.segmentCounter = 0;
     this.ffmpegProc = null;
 
     this.startAudioCapture();
@@ -31,7 +31,7 @@ class StreamSession {
   startAudioCapture() {
     console.log(`[Transcriber] Starting live audio extraction for ${this.streamId}`);
     
-    // Use ffmpeg to extract live audio into 3-second wav slices
+    // Extract live audio into 3-second slices
     const segmentPattern = path.join(this.tempDir, 'chunk_%05d.wav');
     const args = [
       '-reconnect', '1',
@@ -50,10 +50,6 @@ class StreamSession {
 
     this.ffmpegProc = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] });
 
-    this.ffmpegProc.stderr.on('data', (data) => {
-      // Optional ffmpeg debug logs (disabled to reduce log noise)
-    });
-
     this.ffmpegProc.on('error', (err) => {
       console.error(`[Transcriber] FFmpeg error for ${this.streamId}:`, err.message);
     });
@@ -62,7 +58,6 @@ class StreamSession {
       console.log(`[Transcriber] FFmpeg exited with code ${code} for ${this.streamId}`);
     });
 
-    // Start polling directory for new completed wav chunks
     this.pollInterval = setInterval(() => this.processNextChunks(), 1500);
   }
 
@@ -74,7 +69,6 @@ class StreamSession {
         .filter(f => f.startsWith('chunk_') && f.endsWith('.wav'))
         .sort();
 
-      // We process files up to (files.length - 1) to ensure the current chunk is completely written
       if (files.length <= 1) return;
 
       for (let i = 0; i < files.length - 1; i++) {
@@ -83,21 +77,35 @@ class StreamSession {
 
         try {
           const stats = fs.statSync(filePath);
-          if (stats.size > 1000) { // Valid non-empty audio
-            const text = await this.transcribeAudioChunk(filePath);
-            if (text && text.trim().length > 0) {
+          if (stats.size > 1000) {
+            const rawEnglishText = await this.transcribeAudioChunk(filePath);
+            if (rawEnglishText && rawEnglishText.trim().length > 0) {
+              const cleanedText = rawEnglishText.trim();
               const cueStartTime = (Date.now() - this.startTime) / 1000;
-              const cueEndTime = cueStartTime + 3;
-              this.cues.push({
+              const cueEndTime = cueStartTime + 3.5;
+
+              // Generate translations
+              const translations = {
+                eng: cleanedText,
+                fre: await this.translateText(cleanedText, 'French'),
+                spa: await this.translateText(cleanedText, 'Spanish'),
+                ger: await this.translateText(cleanedText, 'German'),
+                ita: await this.translateText(cleanedText, 'Italian')
+              };
+
+              const newCue = {
                 start: cueStartTime,
                 end: cueEndTime,
-                text: text.trim()
-              });
-              // Keep only the most recent 50 cues to prevent memory bloat
-              if (this.cues.length > 50) {
-                this.cues.shift();
-              }
-              console.log(`[Transcriber] [${this.streamId}] Subtitle: "${text.trim()}"`);
+                text: translations
+              };
+
+              this.cues.push(newCue);
+              if (this.cues.length > 60) this.cues.shift();
+
+              console.log(`[Transcriber] [${this.streamId}] Live: "${cleanedText}"`);
+
+              // Broadcast new cue to all active streaming HTTP responses
+              this.broadcastCue(newCue);
             }
           }
         } catch (e) {
@@ -112,10 +120,7 @@ class StreamSession {
   }
 
   async transcribeAudioChunk(audioPath) {
-    if (!this.apiKey) {
-      // Mock / fallback placeholder if no API key is set
-      return "";
-    }
+    if (!this.apiKey) return "";
 
     try {
       const formData = new FormData();
@@ -134,30 +139,83 @@ class StreamSession {
 
       return response.data.text || "";
     } catch (err) {
-      if (err.response) {
-        console.error(`[Transcriber] Groq API error:`, err.response.status, err.response.data);
-      } else {
-        console.error(`[Transcriber] Groq request error:`, err.message);
-      }
       return "";
     }
   }
 
-  getWebVTT() {
+  async translateText(text, targetLanguage) {
+    if (!this.apiKey || !text || targetLanguage === 'English') return text;
+
+    try {
+      const prompt = `Translate the following live sports commentary sentence accurately into ${targetLanguage}. Output ONLY the direct translation and nothing else:\n\n"${text}"`;
+      const response = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
+        model: 'llama-3.1-8b-instant',
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.1,
+        max_tokens: 100
+      }, {
+        headers: {
+          'Authorization': `Bearer ${this.apiKey}`,
+          'Content-Type': 'application/json'
+        },
+        timeout: 3000
+      });
+
+      return response.data.choices[0]?.message?.content?.replace(/^["']|["']$/g, '').trim() || text;
+    } catch (err) {
+      return text; // Fallback to original text if translation fails
+    }
+  }
+
+  attachListener(res, lang = 'eng') {
     this.touch();
-    let vtt = "WEBVTT\n\n";
+    
+    // Set headers for live streaming WebVTT
+    res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('Transfer-Encoding', 'chunked');
 
-    if (this.cues.length === 0) {
-      vtt += `00:00:00.000 --> 00:00:05.000\n[Live subtitles initializing...]\n\n`;
-      return vtt;
+    // Send WebVTT Header
+    res.write("WEBVTT\n\n");
+
+    // Send recent buffered cues
+    for (const cue of this.cues) {
+      const text = cue.text[lang] || cue.text['eng'] || '';
+      res.write(`${formatTime(cue.start)} --> ${formatTime(cue.end)}\n${text}\n\n`);
     }
 
-    for (let i = 0; i < this.cues.length; i++) {
-      const cue = this.cues[i];
-      vtt += `${formatTime(cue.start)} --> ${formatTime(cue.end)}\n${cue.text}\n\n`;
-    }
+    const listener = { res, lang };
+    this.listeners.add(listener);
 
-    return vtt;
+    // Heartbeat keep-alive every 5s
+    const keepAlive = setInterval(() => {
+      if (res.writableEnded || res.closed) {
+        clearInterval(keepAlive);
+        this.listeners.delete(listener);
+        return;
+      }
+      res.write(`NOTE heartbeat\n\n`);
+    }, 5000);
+
+    res.on('close', () => {
+      clearInterval(keepAlive);
+      this.listeners.delete(listener);
+    });
+  }
+
+  broadcastCue(cue) {
+    for (const listener of this.listeners) {
+      try {
+        if (!listener.res.writableEnded && !listener.res.closed) {
+          const text = cue.text[listener.lang] || cue.text['eng'] || '';
+          listener.res.write(`${formatTime(cue.start)} --> ${formatTime(cue.end)}\n${text}\n\n`);
+        }
+      } catch (e) {
+        this.listeners.delete(listener);
+      }
+    }
   }
 
   destroy() {
@@ -166,7 +224,10 @@ class StreamSession {
     if (this.ffmpegProc) {
       try { this.ffmpegProc.kill('SIGKILL'); } catch (_) {}
     }
-    // Clean up temp directory
+    for (const listener of this.listeners) {
+      try { listener.res.end(); } catch (_) {}
+    }
+    this.listeners.clear();
     try {
       fs.rmSync(this.tempDir, { recursive: true, force: true });
     } catch (_) {}
@@ -188,7 +249,6 @@ function pad(num, size = 2) {
   return s;
 }
 
-// Session Manager
 function getOrCreateSession(streamUrl, streamId, apiKey) {
   if (sessions.has(streamId)) {
     const session = sessions.get(streamId);
@@ -201,11 +261,11 @@ function getOrCreateSession(streamUrl, streamId, apiKey) {
   return session;
 }
 
-// Cleanup inactive sessions (no requests for > 45s)
+// Cleanup inactive sessions (no active listeners or requests for > 60s)
 setInterval(() => {
   const now = Date.now();
   for (const [id, session] of sessions.entries()) {
-    if (now - session.lastAccessTime > 45000) {
+    if (session.listeners.size === 0 && (now - session.lastAccessTime > 60000)) {
       console.log(`[Transcriber] Cleaning up idle session: ${id}`);
       session.destroy();
       sessions.delete(id);
